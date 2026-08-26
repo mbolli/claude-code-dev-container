@@ -1,9 +1,10 @@
 #!/usr/bin/env fish
 # Symlink the fish integration into ~/.config/fish.
 #
-# Symlinks rather than copies, so editing the file you use is editing the file
-# you commit. Existing files are moved aside to <name>.pre-install, never
-# overwritten. Run with --uninstall to remove the links again.
+# Prefer `fisher install mbolli/claude-code-dev-container` if you use fisher.
+# This script is the fisher-less path: it symlinks rather than copies, so the
+# file you edit is the file you commit. Existing regular files are moved to
+# <name>.pre-install, never overwritten. Run with --uninstall to remove.
 
 argparse u/uninstall h/help -- $argv; or exit 1
 
@@ -12,16 +13,16 @@ if set -q _flag_help
     exit 0
 end
 
-set -l src (realpath (dirname (status filename)))/fish
+set -l root (realpath (dirname (status filename)))
 set -l dst $HOME/.config/fish
 
-if not test -d $src
-    echo "install: $src not found, run this from inside the repo" >&2
+if not test -f $root/conf.d/tower.fish
+    echo "install: run this from inside the repo" >&2
     exit 1
 end
 
 set -l files conf.d/tower.fish
-for f in $src/completions/*.fish
+for f in $root/completions/*.fish
     set -a files completions/(basename $f)
 end
 
@@ -42,7 +43,7 @@ for f in $files
         mv $target $target.pre-install
         echo "kept     $target.pre-install"
     end
-    ln -s $src/$f $target
+    ln -s $root/$f $target
     echo "linked   $target"
 end
 

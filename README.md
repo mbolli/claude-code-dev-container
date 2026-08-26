@@ -14,10 +14,16 @@ phone without the laptop staying awake.
 ## Layout
 
 ```
+conf.d/      client side: the dev* commands          (fisher installs these)
+completions/ client side: tab completion for them    (fisher installs these)
 container/   server side: image, entrypoint, helper scripts
-fish/        client side: fish shell integration for your workstation
-install.fish symlinks fish/ into ~/.config/fish
+install.fish fisher-less installer, symlinks into ~/.config/fish
 ```
+
+`conf.d/` and `completions/` sit at the repo root because that is the only
+place [fisher](https://github.com/jorgebucaran/fisher) looks. Fisher copies
+`functions/`, `completions/`, `conf.d/` and `themes/` from the root and ignores
+everything else, so `container/` and this README are simply skipped.
 
 ## The container
 
@@ -110,12 +116,28 @@ commands use both aliases, so keep the names or edit `fish/conf.d/tower.fish`.
 
 ## The fish commands
 
+With [fisher](https://github.com/jorgebucaran/fisher):
+
+```sh
+fisher install mbolli/claude-code-dev-container
+fisher remove  mbolli/claude-code-dev-container
+```
+
+Without fisher:
+
 ```sh
 ./install.fish            # symlink into ~/.config/fish
 ./install.fish --uninstall
 ```
 
-Existing files are moved to `<name>.pre-install` rather than overwritten.
+`install.fish` symlinks, so the file you edit is the file you commit. Existing
+regular files are moved to `<name>.pre-install` rather than overwritten.
+
+> Fisher refuses to install over files it does not own, with
+> `Cannot install: please remove or move conflicting files first`. If you
+> already have `~/.config/fish/conf.d/tower.fish` or any `completions/dev*.fish`
+> from a manual install, remove them first (or `./install.fish --uninstall` if
+> they are symlinks from this repo).
 
 Every command that takes a repo accepts `swisscyberguard`,
 `/develop/swisscyberguard` or `develop/swisscyberguard`, and tab-completes
