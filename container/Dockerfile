@@ -49,6 +49,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && phpenmod -v ${PHP_VERSION} openswoole \
     && rm -rf /var/lib/apt/lists/*
 
+# brotli. Build deps are already present from the openswoole layer above.
+# This uses the extension's bundled libbrotli rather than the system one:
+# it costs ~3 MB in the .so and misses distro security updates, but avoids a
+# manual phpize build for what is a dev container. Swap to a phpize build with
+# --with-libbrotli if the shared-library linkage matters. pecl does not prompt
+# here, package.xml declares no configureoptions, and it resolves extension_dir
+# itself so nothing needs hardcoding.
+RUN pecl install brotli \
+    && printf 'extension=brotli.so\n' \
+       > /etc/php/${PHP_VERSION}/mods-available/brotli.ini \
+    && phpenmod -v ${PHP_VERSION} brotli
+
 # Composer
 RUN curl -fsSL https://getcomposer.org/installer -o /tmp/composer-setup.php \
     && php /tmp/composer-setup.php --install-dir=/usr/local/bin --filename=composer \
