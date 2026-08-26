@@ -1,0 +1,13 @@
+# The container's persisted /home/dev volume. Holds .claude.json, .ssh keys,
+# shell history and caches, so it must never be committed.
+home/
+container/home/
+
+# Local backups of build inputs.
+*.bak
+*.bak-*
+*.bak2
+
+# Editor / OS noise
+.DS_Store
+*.swp

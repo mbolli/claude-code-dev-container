@@ -1,0 +1,8 @@
+# The container's persisted home is bind-mounted at runtime, never built into
+# the image. Without this it is sent to the daemon as build context (~5 GB).
+home/
+
+# local backups of build inputs
+*.bak
+*.bak-*
+*.bak2
