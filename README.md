@@ -62,14 +62,68 @@ build context on every build.
 
 ### What is inside
 
-Debian sid, so nodejs 24 and python 3.13 come from apt with no NodeSource repo.
-PHP comes from Sury's trixie suite because Debian has not done the 8.5
-transition yet. openswoole is built from PECL against it, since Sury ships no
-8.5 build. Plus Go, Task, uv, Composer, pnpm/yarn, Chromium (shared by
-puppeteer and lighthouse rather than each downloading its own), ripgrep, fd,
-bat, mdbook, mariadb-client, ffmpeg and imagemagick.
+Base is Debian sid, so most of this comes straight from apt at whatever version
+sid currently carries. Versions below are what the running image has today, not
+pins. Only the three `ARG` lines at the top of the `Dockerfile` are pinned.
 
-Version pins live in `ARG` lines at the top of the `Dockerfile`.
+**Runtimes**
+
+| | Version | Why |
+| --- | --- | --- |
+| nodejs | 24.19 | Runs Claude Code and most tooling. From sid, so no NodeSource repo |
+| npm | 11.16 | Ships with nodejs |
+| python3 | 3.14 | From sid. `pipx` and `venv` included |
+| php | 8.5.9 | From Sury's trixie suite: Debian sid has not done the 8.5 transition yet |
+| go | 1.26.5 | Pinned via `ARG GO_VERSION`, installed from go.dev |
+
+**PHP extensions worth calling out**
+
+| | Version | Why |
+| --- | --- | --- |
+| openswoole | 26.2.0 | Built from PECL: Sury ships no 8.5 build, since openswoole lags new PHP releases |
+| brotli | 0.21.0 | From PECL, bundled libbrotli |
+| xdebug | installed | `phpdismod`-ed by default. `phpenmod -v 8.5 xdebug` to turn it on |
+| redis, imagick, igbinary | apt | Common enough to be worth having preinstalled |
+
+**Package and task managers**
+
+| | Version | Why |
+| --- | --- | --- |
+| composer | 2.10.2 | PHP dependencies |
+| pnpm | 11.22 | Preferred node package manager |
+| yarn | 1.22 | For repos that still expect it |
+| uv | 0.12.5 | Lets individual projects pin their own Python without rebuilding the image |
+| task | 3.45.4 | Pinned via `ARG TASK_VERSION` |
+
+**Browser and media**
+
+| | Version | Why |
+| --- | --- | --- |
+| chromium | 151 | From apt, so puppeteer and lighthouse reuse it instead of each downloading a copy |
+| lighthouse | 13.4.1 | Audits, against the apt chromium |
+| ffmpeg | 8.1.2 | Media conversion |
+| imagemagick | 7.1.2 | Image conversion |
+
+**Shell and CLI**
+
+| | Version | Why |
+| --- | --- | --- |
+| claude | 2.1.237 | Installed by `entrypoint.sh` into the persisted home, not into the image |
+| git | 2.55.0 | |
+| gh | 2.46.0 | Used by `devclone` |
+| tmux | 3.7b | Holds the Remote Control host and rebound sessions |
+| ripgrep | 15.2.0 | Claude Code leans on it for search |
+| fd | 10.4.2 | Symlinked from `fdfind` |
+| bat | 0.26.1 | Symlinked from `batcat` |
+| jq | 1.8.2 | |
+| shellcheck | 0.11.0 | |
+| sqlite3 | 3.53.4 | |
+| mariadb-client | 11.8.8 | Matches the mariadb container it talks to |
+| mdbook | 0.5.4 | |
+| rsync | 3.5.0 | |
+
+Both `fd` and `bat` are symlinked into `/usr/local/bin` because Debian ships
+them as `fdfind` and `batcat` to avoid name clashes.
 
 ### Two container gotchas worth knowing
 
