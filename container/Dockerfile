@@ -90,7 +90,7 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin s
 # auto-update attempt dies with no_permissions. The entrypoint installs the
 # native build into the persisted home instead: dev owns it, it survives an
 # image rebuild, and it can update itself.
-RUN npm i -g --unsafe-perm pnpm yarn lighthouse
+RUN npm i -g pnpm yarn lighthouse
 
 ENV CHROME_PATH=/usr/bin/chromium
 ENV PUPPETEER_SKIP_DOWNLOAD=1
