@@ -127,7 +127,8 @@ RUN sed -i 's/^session\s\+required\s\+pam_loginuid.so/session    optional     pa
 COPY entrypoint.sh /entrypoint.sh
 COPY rebind-sessions.sh /usr/local/bin/rebind-sessions.sh
 COPY trust-develop.sh /usr/local/bin/trust-develop.sh
+COPY dev-sessions /usr/local/bin/dev-sessions
 RUN chmod +x /entrypoint.sh /usr/local/bin/rebind-sessions.sh \
-    /usr/local/bin/trust-develop.sh
+    /usr/local/bin/trust-develop.sh /usr/local/bin/dev-sessions
 
 ENTRYPOINT ["/entrypoint.sh"]

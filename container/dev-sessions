@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+# Claude sessions on this container, addressable by either of their two ids.
+#
+#   dev-sessions ls [-a]          table for humans, newest first (-a: all)
+#   dev-sessions resolve <id>     prints "<uuid>\t<cwd>\t<tmux target if live>"
+#   dev-sessions json             one object per session, for tools
+#
+# A conversation has two ids. The local transcript UUID is what `claude
+# --resume` takes. The Remote Control id (session_01..., also seen as cse_01...
+# or at the end of a claude.ai/code URL) is what the phone and the web UI show.
+# ~/.claude/sessions/<pid>.json records both, one file per process that ever
+# ran. A conversation gets a new Remote Control id each time it is re-bridged
+# (container restart, spawner restart, rebind), so one uuid collects several,
+# and the id on the phone is often an older one. Resolution therefore searches
+# every record; only the display keeps the newest.
+set -euo pipefail
+
+CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude}"
+PROJECTS="$CLAUDE_HOME/projects"
+REGISTRY="$CLAUDE_HOME/sessions"
+UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+# Unit separator, not tab: tab is IFS whitespace, so read would collapse the
+# empty cwd or branch fields and shift every column after them.
+US=$'\x1f'
+
+die() { echo "dev-sessions: $*" >&2; exit 1; }
+
+# Every registry record, one compact JSON object per line.
+registry_all() {
+  [ -d "$REGISTRY" ] || return 0
+  jq -c 'select(.sessionId)' "$REGISTRY"/*.json 2>/dev/null || true
+}
+
+# uuid -> newest record, plus every bridge id it has ever had, newest first.
+registry() {
+  registry_all | jq -c -s 'group_by(.sessionId) | map(
+      sort_by(-(.updatedAt // 0)) as $r
+      | $r[0] + {bridges: reduce ($r[].bridgeSessionId | select(.)) as $b
+                   ([]; if any(.[]; . == $b) then . else . + [$b] end)}
+    ) | .[]'
+}
+
+# A record is live only if its pid exists AND is the same process: pids start
+# again from 1 after every rebuild, so a bare kill -0 reports dead sessions.
+alive() {
+  local pid="$1" start="$2"
+  [ -n "$pid" ] && [ -r "/proc/$pid/stat" ] || return 1
+  [ "$(cut -d')' -f2- "/proc/$pid/stat" | awk '{print $20}')" = "$start" ]
+}
+
+# tmux target of the live process for a uuid, or nothing.
+live_target() {
+  local rec
+  while IFS= read -r rec; do
+    if alive "$(jq -r '.pid // ""' <<<"$rec")" "$(jq -r '.procStart // ""' <<<"$rec")"; then
+      jq -r '.tmux // ""' <<<"$rec"
+      return 0
+    fi
+  done < <(registry_all | jq -c --arg u "$1" 'select(.sessionId == $u)')
+}
+
+# Every local transcript: uuid, cwd, branch, mtime, message count.
+transcripts() {
+  local f uuid cwd branch
+  for f in "$PROJECTS"/*/*.jsonl; do
+    [ -f "$f" ] || continue
+    uuid="$(basename "$f" .jsonl)"
+    [[ $uuid =~ $UUID_RE ]] || continue
+    # grep -m1 stops at the first match; jq over a 9 MB transcript would not.
+    IFS="$US" read -r cwd branch < <(grep -m1 '"cwd"' "$f" \
+      | jq -r --arg us "$US" '[.cwd // "", .gitBranch // ""] | join($us)' 2>/dev/null || true) || true
+    printf '%s\n' "$uuid$US${cwd:-}$US${branch:-}$US$(stat -c %Y "$f")$US$(wc -l < "$f")"
+  done
+}
+
+sessions_json() {
+  local reg
+  reg="$(registry | jq -s 'map({key: .sessionId, value: .}) | from_entries')"
+  transcripts | while IFS="$US" read -r uuid cwd branch mtime msgs; do
+    local r live=false
+    r="$(jq -c --arg u "$uuid" '.[$u] // {}' <<<"$reg")"
+    alive "$(jq -r '.pid // ""' <<<"$r")" "$(jq -r '.procStart // ""' <<<"$r")" && live=true
+    jq -cn --arg uuid "$uuid" --arg cwd "$cwd" --arg branch "$branch" \
+      --argjson mtime "${mtime:-0}" --argjson msgs "${msgs:-0}" \
+      --argjson live "$live" --argjson r "$r" \
+      '{uuid:$uuid, cwd:$cwd, branch:$branch, mtime:$mtime, messages:$msgs,
+        live:$live, bridge:($r.bridgeSessionId // ""), bridges:($r.bridges // []),
+        name:($r.name // ""), tmux:(if $live then $r.tmux // "" else "" end)}'
+  done
+}
+
+cmd_json() { sessions_json | jq -s 'sort_by(-.mtime)'; }
+
+cmd_ls() {
+  local limit=15 all=false
+  [ "${1:-}" = "-a" ] && { limit=100000; all=true; }
+  # Sessions that ran in a /tmp scratchpad are subagent probes, hidden unless -a.
+  sessions_json | jq -rs --argjson n "$limit" --argjson all "$all" --argjson now "$(date +%s)" '
+    def age: ($now - .) as $s
+      | if   $s < 3600  then "\($s/60|floor)m"
+        elif $s < 86400 then "\($s/3600|floor)h"
+        else "\($s/86400|floor)d" end;
+    ["", "AGE", "REPO", "BRANCH", "UUID (--resume)", "REMOTE CONTROL ID"],
+    ( map(select($all or (.cwd | startswith("/tmp") | not)))
+      | sort_by(-.mtime) | .[:$n][]
+      | [ (if .live then "●" else " " end), (.mtime|age),
+          (.cwd | sub("^/develop/?"; "") | if . == "" then "/develop" else . end
+                | if length > 28 then .[:27] + "…" else . end),
+          (if .branch == "" then "-" else .branch end),
+          .uuid,
+          (if .bridge == "" then "-"
+           elif (.bridges|length) > 1 then "\(.bridge) (+\((.bridges|length) - 1) older)"
+           else .bridge end) ] )
+    | @tsv' \
+  | awk -F'\t' '
+      # Column 1 is one glyph wide in every row, and mawk counts bytes, so it
+      # is printed as is rather than measured.
+      { n = NR; for (i = 1; i <= NF; i++) { c[n, i] = $i; if (i > 1 && length($i) > w[i]) w[i] = length($i) }
+        if (NF > nf) nf = NF }
+      END { for (r = 1; r <= n; r++) {
+              line = c[r, 1] " "
+              for (i = 2; i <= nf; i++) line = line sprintf("%-" w[i] "s", c[r, i]) (i < nf ? "  " : "")
+              sub(/ +$/, "", line); print line } }'
+}
+
+# Accepts a uuid, session_01..., cse_01..., or a claude.ai/code URL.
+cmd_resolve() {
+  local id="${1:-}" uuid f cwd suffix
+  [ -n "$id" ] || die "usage: dev-sessions resolve <uuid|session_id|url>"
+  id="${id%%\?*}"; id="${id%/}"; id="${id##*/}"
+
+  if [[ $id =~ $UUID_RE ]]; then
+    uuid="$id"
+  elif [[ $id =~ ^(session|cse)_(.+)$ ]]; then
+    suffix="${BASH_REMATCH[2]}"
+    uuid="$(registry_all | jq -r --arg s "$suffix" \
+      'select((.bridgeSessionId // "") | endswith("_" + $s)) | .sessionId' | head -1)"
+    [ -n "$uuid" ] || die "no local session was ever bridged as ${BASH_REMATCH[1]}_$suffix"
+  else
+    die "not a session id: $id"
+  fi
+
+  f="$(ls -t "$PROJECTS"/*/"$uuid".jsonl 2>/dev/null | head -1 || true)"
+  [ -n "$f" ] || die "no transcript for $uuid, so --resume has nothing to open"
+  cwd="$(grep -m1 '"cwd"' "$f" | jq -r '.cwd // empty' 2>/dev/null || true)"
+  [ -n "$cwd" ] || die "transcript for $uuid records no cwd"
+  printf '%s\t%s\t%s\n' "$uuid" "$cwd" "$(live_target "$uuid")"
+}
+
+case "${1:-}" in
+  ls)      shift; cmd_ls "$@" ;;
+  resolve) shift; cmd_resolve "$@" ;;
+  json)    cmd_json ;;
+  *)       sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac
