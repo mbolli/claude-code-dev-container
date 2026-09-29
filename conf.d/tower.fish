@@ -166,11 +166,18 @@ end
 # A session on the bare ssh pty dies when the notebook suspends and the pty
 # closes, and its subprocesses are left orphaned on PID 1.
 
+function sessel --description "Claude sessions on tower: browse, peek, resume, delete (sessel --help)"
+    # sessel lives in the image (container/sessel) because the transcripts,
+    # the registry and tmux are all on tower. -t for the TUI and for prompts.
+    # $a, not an inline (…): concatenating with an empty command substitution
+    # yields no argument at all, and ssh would open a login shell instead.
+    set -l a (string escape -- $argv | string join ' ')
+    ssh -t tower-dev "LANG=C.UTF-8 sessel $a"
+end
+
 function devls --description "List Claude sessions on tower; either id works for devresume (-a: all)"
-    # dev-sessions lives in the image (container/dev-sessions) because the
-    # registry, the transcripts and tmux are all on tower: one ssh call.
-    __dev_ssh "dev-sessions ls $argv
-        echo; echo \"tmux: \$(tmux list-sessions -F '#{session_name}' 2>/dev/null | tr '\n' ' ')\""
+    set -l a (string escape -- $argv | string join ' ')
+    __dev_ssh "sessel ls $a"
 end
 
 function __dev_tmux_name --description "tmux session name for a /develop directory"
@@ -190,20 +197,16 @@ function __dev_tmux --description "Run claude in a named tmux session on the con
     # LC_ALL/LC_CTYPE/LANG. This is a non-login shell, so /etc/profile.d never
     # runs and none of them are set, and tmux then mangles every box-drawing and
     # powerline glyph. -u tells tmux the same thing directly.
-    ssh -t tower-dev "LANG=C.UTF-8 tmux -u new-session -A -s '$name' -c '$dir' claude $argv[3..]"
+    #
+    # --remote-control, so every session is on the phone even if the
+    # container's remoteControlAtStartup setting is ever lost.
+    ssh -t tower-dev "LANG=C.UTF-8 tmux -u new-session -A -s '$name' -c '$dir' claude --remote-control '$name' $argv[3..]"
 end
 
-function __dev_complete_sessions --description "uuid, then repo and branch as the description, for devresume"
-    __dev_ssh 'dev-sessions json' 2>/dev/null | jq -r '.[]
+function __dev_complete_sessions --description "uuid, then title and repo as the description, for devresume"
+    __dev_ssh 'sessel json' 2>/dev/null | jq -r '.[]
         | select(.cwd | startswith("/tmp") | not)
-        | "\(.uuid)\t\(if .live then "● " else "" end)\(.cwd | sub("^/develop/?"; "") | if . == "" then "/develop" else . end) \(.branch)"'
-end
-
-function __dev_attach --description "Attach to a running tmux pane on the container (session:@window.%pane)"
-    set -l sess (string split -m1 : -- $argv[1])[1]
-    set -l win (string split -m1 . -- (string split -m1 : -- $argv[1])[2])[1]
-    set -l pane (string split -m1 . -- (string split -m1 : -- $argv[1])[2])[2]
-    ssh -t tower-dev "LANG=C.UTF-8 tmux -u select-window -t '$sess:$win' \; select-pane -t '$pane' \; attach -t '$sess'"
+        | "\(.uuid)\t\(if .state != "dead" then "● " else "" end)\(.title) (\(.cwd | sub("^/develop/?"; "") | if . == "" then "/develop" else . end))"'
 end
 
 function devwork --description "Start or reattach a Claude session for a repo (tmux + Remote Control)"
@@ -211,30 +214,14 @@ function devwork --description "Start or reattach a Claude session for a repo (t
     __dev_tmux $dir (__dev_tmux_name $dir)
 end
 
-function devresume --description "Resume a session by uuid, session_ id or claude.ai URL (picker if none)"
-    if not set -q argv[1]
-        __dev_tmux /develop picker --resume
-        return
+function devresume --description "Resume a session by uuid, session_ id or claude.ai URL (sessel TUI if none)"
+    # sessel open resumes a dead session in its own tmux session, attaches to a
+    # live one, and offers to move one running outside tmux into it.
+    if set -q argv[1]
+        sessel open $argv[1]
+    else
+        sessel
     end
-
-    # uuid, cwd and the tmux pane it runs in if it is live, from either id.
-    set -l r (__dev_ssh "dev-sessions resolve "(string escape -- $argv[1])); or return 1
-    set -l f (string split \t -- $r)
-    set -l uuid $f[1]
-    set -l dir $f[2]
-    set -l live $f[3]
-
-    # Already running somewhere: attach to it rather than start a second
-    # process writing the same transcript.
-    if test -n "$live"
-        echo "$uuid is already running in $live, attaching"
-        __dev_attach $live
-        return
-    end
-
-    # Named after the conversation, not the directory, so -A neither lands in
-    # a devwork session for the same repo nor in a different conversation.
-    __dev_tmux $dir (__dev_tmux_name $dir)-(string sub -l 8 -- $uuid) --resume $uuid
 end
 
 function devcontinue --description "Continue the last Claude session in a tower directory"
