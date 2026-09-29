@@ -20,7 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       procps sudo xz-utils unzip zip build-essential pkg-config \
       ripgrep fd-find bat shellcheck sqlite3 mariadb-client mdbook rsync imagemagick ffmpeg \
       docker-cli docker-compose docker-buildx \
-      brotli \
+      brotli ncurses-term \
       libheif-plugin-aomenc libheif-plugin-svtenc \
       nodejs npm \
       python3 python3-pip python3-venv pipx \
@@ -98,11 +98,19 @@ ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PATH=/usr/local/go/bin:/home/dev/go/bin:/home/dev/.local/bin:/usr/local/bin:$PATH
 ENV GOPATH=/home/dev/go
 
+# Which environment the statusline reports. claude-powerline reads it through
+# its env segment; the laptop sets work or private from claude.fish.
+ENV CLAUDE_PROFILE=tower
+
+# tmux decides per client whether the terminal is UTF-8 from LC_ALL, LC_CTYPE or
+# LANG. debian-slim sets none and ships no locales package, so without this tmux
+# mangles every multibyte glyph. C.UTF-8 needs no locales package.
+ENV LANG=C.UTF-8
 
 # Debian /etc/profile hard-sets PATH, discarding the ENV above, so login shells
 # (ssh into this container, bash -l) lose ~/.local/bin and the Go toolchain.
 # A profile.d snippet re-adds them after /etc/profile has run.
-RUN printf 'PATH=/usr/local/go/bin:$HOME/go/bin:$HOME/.local/bin:$PATH\n' \
+RUN printf 'PATH=/usr/local/go/bin:$HOME/go/bin:$HOME/.local/bin:$PATH\nexport CLAUDE_PROFILE=tower\nexport LANG=C.UTF-8\n' \
       > /etc/profile.d/00-dev-path.sh
 
 # UNRAID share convention: nobody:users == 99:100
