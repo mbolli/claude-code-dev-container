@@ -13,11 +13,15 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Base toolchain. sid ships nodejs 24.19 and python 3.13 natively, so no
 # NodeSource repo is needed. mariadb-client is 11.8.8, the same version as the
 # mariadb container it talks to; mdbook is 0.5.4.
+# ImageMagick reads AVIF but cannot write it without an encoder: Debian ships
+# libheif's AV1 encoders as separate plugin packages. GD needs nothing extra.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl wget git gh tmux openssh-server openssh-client less jq \
       procps sudo xz-utils unzip zip build-essential pkg-config \
       ripgrep fd-find bat shellcheck sqlite3 mariadb-client mdbook rsync imagemagick ffmpeg \
       docker-cli docker-compose docker-buildx \
+      brotli \
+      libheif-plugin-aomenc libheif-plugin-svtenc \
       nodejs npm \
       python3 python3-pip python3-venv pipx \
       chromium fonts-liberation fonts-noto-color-emoji \
