@@ -11,6 +11,17 @@ chown -R 99:100 "$HOME_DIR/.ssh" "$HOME_DIR/.sshd" "$HOME_DIR/go" 2>/dev/null ||
 chown 99:100 "$HOME_DIR/.local" "$HOME_DIR/.local/bin" 2>/dev/null || true
 chmod 700 "$HOME_DIR/.ssh"
 
+# The host docker socket arrives owned by the host's docker group (281 here).
+# Mirror that gid inside the container and put dev in it, otherwise every
+# docker call from an ssh session fails with permission denied on the socket.
+# Read at runtime rather than hardcoded: Unraid renumbers the group whenever
+# the docker.img is recreated.
+if [ -S /var/run/docker.sock ]; then
+  sock_gid=$(stat -c %g /var/run/docker.sock)
+  getent group "$sock_gid" >/dev/null || groupadd -g "$sock_gid" docker-host
+  usermod -aG "$(getent group "$sock_gid" | cut -d: -f1)" dev
+fi
+
 # Seed a shell profile only if the persisted home doesn't have one yet.
 if [ ! -f "$HOME_DIR/.bashrc" ]; then
   cat > "$HOME_DIR/.bashrc" <<'RC'

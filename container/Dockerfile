@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl wget git gh tmux openssh-server openssh-client less jq \
       procps sudo xz-utils unzip zip build-essential pkg-config \
       ripgrep fd-find bat shellcheck sqlite3 mariadb-client mdbook rsync imagemagick ffmpeg \
+      docker-cli docker-compose docker-buildx \
       nodejs npm \
       python3 python3-pip python3-venv pipx \
       chromium fonts-liberation fonts-noto-color-emoji \
@@ -92,6 +93,7 @@ ENV PUPPETEER_SKIP_DOWNLOAD=1
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PATH=/usr/local/go/bin:/home/dev/go/bin:/home/dev/.local/bin:/usr/local/bin:$PATH
 ENV GOPATH=/home/dev/go
+
 
 # Debian /etc/profile hard-sets PATH, discarding the ENV above, so login shells
 # (ssh into this container, bash -l) lose ~/.local/bin and the Go toolchain.

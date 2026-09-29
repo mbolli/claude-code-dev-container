@@ -23,6 +23,7 @@ docker run -d \
   -p 2222:22 \
   -v /mnt/user/appdata/claude-code/home:/home/dev \
   -v /mnt/user/develop:/develop \
+  -v /var/run/docker.sock:/var/run/docker.sock \
   claude-code:local
 
 docker ps --filter name=claude-code --format '{{.Names}} | {{.Image}} | {{.Status}} | {{.Ports}}'
