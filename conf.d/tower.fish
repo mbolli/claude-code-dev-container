@@ -165,10 +165,18 @@ end
 # the local transcript UUIDs under ~/.claude/projects. Only one Remote Control
 # process may serve a directory at a time, so devattach stops the spawner for
 # the duration and starts it again afterwards.
+#
+# Every session below runs under tmux on the container, named after the repo.
+# A session on the bare ssh pty dies when the notebook suspends and the pty
+# closes, and its subprocesses are left orphaned on PID 1.
 
 function devls --description "List Claude sessions and Remote Control environments on tower"
     echo "── remote control host ───────────────────────────────"
     __dev_ssh 'tmux list-windows -t rc 2>/dev/null || echo "  (no tmux session)"'
+    echo
+    echo "── work sessions (tmux, one per repo) ────────────────"
+    __dev_ssh 'tmux list-sessions -F "  #{session_name}  #{session_windows}w  attached=#{session_attached}" \
+        2>/dev/null | grep -v "^  rc " || echo "  (none)"'
     echo
     echo "── environments (one per directory) ──────────────────"
     __dev_ssh 'for p in ~/.claude/projects/*/bridge-pointer.json; do
@@ -183,21 +191,45 @@ function devls --description "List Claude sessions and Remote Control environmen
         | sort -r | head -12 | sed "s/\.jsonl//; s/^/  /"'
 end
 
+function __dev_tmux_name --description "tmux session name for a /develop directory"
+    # string replace exits 1 when it changes nothing, which a clean name does.
+    string replace -r '^.*/' '' -- "$argv[1]" | string replace -ra '[^A-Za-z0-9_-]' -
+    return 0
+end
+
+function __dev_tmux --description "Run claude under a per-repo tmux session on the container"
+    set -l dir $argv[1]
+    set -l name (__dev_tmux_name $dir)
+    # -A attaches to an existing session and ignores the command, which is what
+    # picking work back up should do.
+    #
+    # LANG and -u: tmux decides per client whether the terminal is UTF-8 from
+    # LC_ALL/LC_CTYPE/LANG. This is a non-login shell, so /etc/profile.d never
+    # runs and none of them are set, and tmux then mangles every box-drawing and
+    # powerline glyph. -u tells tmux the same thing directly.
+    ssh -t tower-dev "LANG=C.UTF-8 tmux -u new-session -A -s '$name' -c '$dir' claude $argv[2..]"
+end
+
+function devwork --description "Start or reattach a Claude session for a repo (tmux + Remote Control)"
+    set -l dir (__dev_resolve "$argv[1]"); or return 1
+    __dev_tmux $dir
+end
+
 function devresume --description "Resume a Claude session on tower (picker, or pass a uuid)"
     set -l dir /develop
     if set -q argv[2]
         set dir (__dev_resolve "$argv[2]"); or return 1
     end
     if set -q argv[1]
-        ssh -t tower-dev "cd $dir && claude --resume $argv[1]"
+        __dev_tmux $dir --resume $argv[1]
     else
-        ssh -t tower-dev "cd $dir && claude --resume"
+        __dev_tmux $dir --resume
     end
 end
 
 function devcontinue --description "Continue the last Claude session in a tower directory"
     set -l dir (__dev_resolve "$argv[1]"); or return 1
-    ssh -t tower-dev "cd $dir && claude --continue"
+    __dev_tmux $dir --continue
 end
 
 function devattach --description "Re-attach a Remote Control session by id or claude.ai/code URL"
