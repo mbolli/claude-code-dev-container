@@ -256,7 +256,8 @@ Run it with no arguments for the browser, from the laptop as `sessel` or
 | `space`, `d` | mark sessions, delete the marked ones or the current one |
 | `R` | rename, as `/rename` does; not for a running session, which writes its own title back |
 | `n` | new project: `/develop/<name>`, `git init`, served to the phone, first session opened |
-| `tab` | scroll the peek pane |
+| `s` | switch the right pane between the peek and stats: size on disk, prompts, turns, tool calls, tokens, models, when it started |
+| `tab` | scroll the right pane; a live session's peek follows its newest turns |
 
 The same things are subcommands: `sessel ls`, `open`, `peek`, `rename`, `rm`,
 `new`, `serve`, `resolve`, `json`. `sessel --help` lists them.

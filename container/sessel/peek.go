@@ -2,12 +2,15 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
+	"time"
 )
 
 // A turn is one line of the peek: something you typed, something Claude said,
@@ -17,7 +20,26 @@ type Turn struct {
 	Text string
 }
 
-const peekTurns = 14
+const (
+	peekTurns = 14
+	peekTail  = 4 << 20
+)
+
+// seekPastNewline positions f just after the first newline at or after off.
+func seekPastNewline(f *os.File, off int64) error {
+	buf := make([]byte, 64<<10)
+	for {
+		n, err := f.ReadAt(buf, off)
+		if i := bytes.IndexByte(buf[:n], '\n'); i >= 0 {
+			_, serr := f.Seek(off+int64(i)+1, io.SeekStart)
+			return serr
+		}
+		if err != nil {
+			return err
+		}
+		off += int64(n)
+	}
+}
 
 func cmdPeek(args []string) error {
 	if len(args) != 1 {
@@ -43,6 +65,14 @@ func lastTurns(path string, n int) ([]Turn, error) {
 		return nil, err
 	}
 	defer f.Close()
+	// Only the tail: the last turns are there, the opening prompt comes from
+	// the cache, and a live session's peek is re-read every couple of seconds.
+	// Start after the first newline, not mid-line.
+	if fi, err := f.Stat(); err == nil && fi.Size() > peekTail {
+		if err := seekPastNewline(f, fi.Size()-peekTail); err != nil {
+			return nil, err
+		}
+	}
 	var ring []Turn
 	push := func(t Turn) {
 		ring = append(ring, t)
@@ -237,4 +267,96 @@ func wrap(s string, width, maxLines int) string {
 		lines = append(lines[:maxLines], "…")
 	}
 	return strings.Join(lines, "\n")
+}
+
+// renderStats is the other face of the right pane: numbers instead of text.
+// arts is nil while the footprint is still being measured.
+func renderStats(s *Session, arts []Artifact, width int, st style) string {
+	var b strings.Builder
+	w := func(format string, a ...any) { fmt.Fprintf(&b, format, a...) }
+	row := func(k, v string) { w("%s %s\n", st.Label(fmt.Sprintf("%-17s", k)), v) }
+	x := s.Stats
+
+	w("%s\n", st.Heading(s.Title))
+	row("repo", s.Repo()+"   "+st.Label("branch")+" "+orDash(s.Branch))
+	row("state", stateWords(s))
+	row("uuid", s.UUID)
+	for i, br := range s.Bridges {
+		if i == 0 {
+			row("phone", br)
+		} else {
+			row("", st.Dim(br+"  (older)"))
+		}
+	}
+
+	w("\n%s\n", st.Label("── size ──"))
+	if fi, err := os.Stat(s.File); err == nil {
+		row("transcript", fmt.Sprintf("%s   %d entries", humanBytes(fi.Size()), s.Lines))
+	}
+	if arts == nil {
+		row("on disk in total", st.Dim("measuring…"))
+	} else {
+		files, bytes := totals(arts)
+		row("on disk in total", fmt.Sprintf("%s   %d files in %d places", humanBytes(bytes), files, len(arts)))
+	}
+
+	w("\n%s\n", st.Label("── length ──"))
+	row("your prompts", fmt.Sprint(x.Prompts))
+	row("Claude's turns", fmt.Sprint(x.Turns))
+	row("tool calls", fmt.Sprint(x.ToolCalls))
+	first, firstOK := parseTS(x.FirstAt)
+	last, lastOK := parseTS(x.LastAt)
+	if firstOK {
+		row("started", first.Local().Format("2006-01-02 15:04")+st.Dim("   "+age(first)+" ago"))
+	}
+	if lastOK {
+		row("last activity", last.Local().Format("2006-01-02 15:04")+st.Dim("   "+age(last)+" ago"))
+	}
+	if firstOK && lastOK {
+		row("span", span(last.Sub(first)))
+	}
+
+	w("\n%s\n", st.Label("── tokens ──"))
+	row("input", humanCount(x.InTokens))
+	row("output", humanCount(x.OutTokens))
+	row("cache read", humanCount(x.CacheRead))
+	row("cache write", humanCount(x.CacheWrite))
+	if len(x.Models) > 0 {
+		row("models", strings.Join(x.Models, ", "))
+	}
+
+	if len(s.PRs) > 0 {
+		w("\n%s\n", st.Label("── pull requests ──"))
+		for _, pr := range s.PRs {
+			w("#%d %s\n", pr.Number, pr.URL)
+		}
+	}
+	return b.String()
+}
+
+func parseTS(s string) (time.Time, bool) {
+	t, err := time.Parse(time.RFC3339Nano, s)
+	return t, err == nil
+}
+
+func span(d time.Duration) string {
+	switch {
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh %dm", int(d.Hours()), int(d.Minutes())%60)
+	}
+	return fmt.Sprintf("%dd %dh", int(d.Hours()/24), int(d.Hours())%24)
+}
+
+func humanCount(n int64) string {
+	switch {
+	case n >= 1_000_000_000:
+		return fmt.Sprintf("%.1fB", float64(n)/1e9)
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1e6)
+	case n >= 1_000:
+		return fmt.Sprintf("%.1fK", float64(n)/1e3)
+	}
+	return fmt.Sprint(n)
 }

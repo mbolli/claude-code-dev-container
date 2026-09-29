@@ -29,7 +29,7 @@ var (
 	cDim    = lipgloss.AdaptiveColor{Light: "#6b7280", Dark: "#8b8fa3"}
 	cWarn   = lipgloss.AdaptiveColor{Light: "#b91c1c", Dark: "#ff8a80"}
 	cLive   = lipgloss.AdaptiveColor{Light: "#15803d", Dark: "#7ee2a0"}
-	cSel    = lipgloss.AdaptiveColor{Light: "#ede9fe", Dark: "#2e2748"}
+	cSel    = lipgloss.AdaptiveColor{Light: "#ddd6fe", Dark: "#4a3d85"}
 
 	sHeading = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
 	sLabel   = lipgloss.NewStyle().Foreground(cDim)
@@ -54,6 +54,11 @@ type peekMsg struct {
 	mtime time.Time
 	turns []Turn
 	err   error
+}
+type artsMsg struct {
+	uuid  string
+	mtime time.Time
+	arts  []Artifact
 }
 type reloadMsg struct {
 	st  *Store
@@ -84,6 +89,9 @@ type model struct {
 	peekFocus bool
 	peeks     map[string]peekMsg
 	peekFor   string
+	shownFor  string // the session the pane currently shows
+	showStats bool   // the right pane shows stats instead of the peek
+	arts      map[string]artsMsg
 
 	note  string
 	isErr bool
@@ -100,7 +108,7 @@ func runTUI() int {
 	}
 	in := textinput.New()
 	in.Prompt = ""
-	m := &model{st: st, marked: map[string]bool{}, peeks: map[string]peekMsg{}, input: in, peek: viewport.New(0, 0)}
+	m := &model{st: st, marked: map[string]bool{}, peeks: map[string]peekMsg{}, arts: map[string]artsMsg{}, input: in, peek: viewport.New(0, 0)}
 	m.refilter()
 	final, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
 	if err != nil {
@@ -121,7 +129,7 @@ func (m *model) Init() tea.Cmd { return tea.Batch(m.loadPeek(), tick()) }
 // Live state changes under us (sessions start and stop), and a reload is a
 // cache hit costing milliseconds, so the list refreshes itself.
 func tick() tea.Cmd {
-	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
+	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
 func reload() tea.Cmd {
@@ -173,6 +181,15 @@ func (m *model) loadPeek() tea.Cmd {
 		return nil
 	}
 	m.peekFor = s.UUID
+	if m.showStats {
+		if a, ok := m.arts[s.UUID]; ok && a.mtime.Equal(s.Mtime) {
+			m.setPeek()
+			return nil
+		}
+		m.setPeek()
+		st, sess := m.st, s
+		return func() tea.Msg { return artsMsg{sess.UUID, sess.Mtime, st.Footprint(sess)} }
+	}
 	if p, ok := m.peeks[s.UUID]; ok && p.mtime.Equal(s.Mtime) {
 		m.setPeek()
 		return nil
@@ -185,13 +202,34 @@ func (m *model) loadPeek() tea.Cmd {
 	}
 }
 
+// setPeek redraws the pane. A new session starts at the top, or at the bottom
+// if it is live, since that is where its newest turns are. A refresh of the
+// same session keeps your scroll position, and keeps following the bottom of a
+// live one if you were at the bottom.
 func (m *model) setPeek() {
 	s := m.current()
 	if s == nil {
 		m.peek.SetContent(sDim.Render("no sessions"))
 		return
 	}
+	same := m.shownFor == s.UUID
+	follow := s.State != Dead && (!same || m.peek.AtBottom())
+	offset := m.peek.YOffset
+	m.shownFor = s.UUID
 	width := m.peek.Width - 2
+	if m.showStats {
+		var arts []Artifact
+		if a, ok := m.arts[s.UUID]; ok {
+			arts = a.arts
+		}
+		m.peek.SetContent(renderStats(s, arts, width, tuiStyle{}))
+		if !same {
+			m.peek.GotoTop()
+		} else {
+			m.peek.SetYOffset(offset)
+		}
+		return
+	}
 	p, ok := m.peeks[s.UUID]
 	switch {
 	case !ok:
@@ -201,7 +239,14 @@ func (m *model) setPeek() {
 	default:
 		m.peek.SetContent(renderPeek(s, p.turns, width, tuiStyle{}))
 	}
-	m.peek.GotoTop()
+	switch {
+	case follow:
+		m.peek.GotoBottom()
+	case same:
+		m.peek.SetYOffset(offset)
+	default:
+		m.peek.GotoTop()
+	}
 }
 
 func (m *model) say(format string, a ...any) { m.note, m.isErr = fmt.Sprintf(format, a...), false }
@@ -224,6 +269,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.st = msg.st
 			m.refilter()
 			return m, m.loadPeek()
+		}
+		return m, nil
+	case artsMsg:
+		m.arts[msg.uuid] = msg
+		if msg.uuid == m.peekFor {
+			m.setPeek()
 		}
 		return m, nil
 	case peekMsg:
@@ -298,6 +349,10 @@ func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.loadPeek()
 	case "r":
 		return m, reload()
+	case "s":
+		m.showStats = !m.showStats
+		m.shownFor = "" // a different view starts at its top
+		return m, m.loadPeek()
 	case " ":
 		if s := m.current(); s != nil {
 			if m.marked[s.UUID] {
@@ -523,22 +578,36 @@ func (m *model) viewList() string {
 	}
 	width := m.listWidth()
 	repoW := 16
-	titleW := max(8, width-repoW-12)
+	titleW := max(8, width-repoW-13)
 	var b strings.Builder
 	for i := m.top; i < min(len(m.rows), m.top+h); i++ {
 		s := m.rows[i]
-		mark := " "
+		sel := i == m.cursor
+		// Every segment of the selected row carries the background itself: the
+		// reset ending a coloured segment would otherwise end the highlight too.
+		bg := func(st lipgloss.Style) lipgloss.Style {
+			if sel {
+				return st.Background(cSel).Bold(true)
+			}
+			return st
+		}
+		plain := bg(lipgloss.NewStyle())
+		cur := plain.Render(" ")
+		if sel {
+			cur = bg(sHeading).Render("›")
+		}
+		mark := plain.Render(" ")
 		if m.marked[s.UUID] {
-			mark = sWarn.Render("✗")
+			mark = bg(sWarn).Render("✗")
 		}
-		state := marker(s.State)
+		state := plain.Render(marker(s.State))
 		if s.State != Dead {
-			state = sLive.Render(state)
+			state = bg(sLive).Render(marker(s.State))
 		}
-		line := fmt.Sprintf("%s%s %-4s %-*s %s", mark, state, age(s.Mtime),
-			repoW, oneLine(s.Repo(), repoW), oneLine(s.Title, titleW))
-		if i == m.cursor {
-			line = sSelRow.Render(clamp(line, width, 1))
+		text := fmt.Sprintf(" %-4s %-*s %s", age(s.Mtime), repoW, oneLine(s.Repo(), repoW), oneLine(s.Title, titleW))
+		line := ansi.Truncate(cur+mark+state+plain.Render(text), width, "…")
+		if pad := width - ansi.StringWidth(line); pad > 0 {
+			line += plain.Render(strings.Repeat(" ", pad))
 		}
 		b.WriteString(line)
 		if i < min(len(m.rows), m.top+h)-1 {
@@ -567,7 +636,11 @@ func (m *model) viewFooter() string {
 		}
 		return " " + sLive.Render(m.note)
 	}
-	help := "↑↓ move · enter open · tab peek · / filter · space mark · d delete · R rename · n new project · a scratch · q quit"
+	view := "stats"
+	if m.showStats {
+		view = "peek"
+	}
+	help := "↑↓ move · enter open · s " + view + " · tab scroll · / filter · space mark · d delete · R rename · n new · a scratch · q quit"
 	if m.peekFocus {
 		help = "↑↓ pgup pgdn scroll · tab back · q quit"
 	}

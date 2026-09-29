@@ -56,6 +56,25 @@ type meta struct {
 	FirstPrompt string
 	Bridges     []string // in file order
 	PRs         []PR
+	Stats       Stats
+}
+
+// Stats are counted in the same pass as everything else, so they are cached
+// and the stats view costs nothing extra.
+type Stats struct {
+	Prompts    int      `json:"prompts"` // what you typed
+	Turns      int      `json:"turns"`   // Claude's replies, one per message
+	ToolCalls  int      `json:"toolCalls"`
+	InTokens   int64    `json:"inTokens"`
+	OutTokens  int64    `json:"outTokens"`
+	CacheRead  int64    `json:"cacheRead"`
+	CacheWrite int64    `json:"cacheWrite"`
+	Models     []string `json:"models"`
+	FirstAt    string   `json:"firstAt"`
+	LastAt     string   `json:"lastAt"`
+	// A reply with several blocks is written as several lines, each repeating
+	// the message's full usage; count it once.
+	LastMsgID string `json:"lastMsgId,omitempty"`
 }
 
 type Session struct {
@@ -71,6 +90,7 @@ type Session struct {
 	Lines       int       `json:"lines"`
 	Bridges     []string  `json:"bridges"` // newest first
 	PRs         []PR      `json:"prs"`
+	Stats       Stats     `json:"stats"`
 	State       State     `json:"-"`
 	StateName   string    `json:"state"`
 	PID         int       `json:"pid,omitempty"`
@@ -176,7 +196,7 @@ func (st *Store) session(path string, fi os.FileInfo, m meta) *Session {
 	s := &Session{
 		UUID: uuid, File: path, Project: filepath.Base(filepath.Dir(path)),
 		Cwd: m.Cwd, Branch: m.Branch, FirstPrompt: m.FirstPrompt,
-		Mtime: fi.ModTime(), Lines: m.Lines, PRs: m.PRs,
+		Mtime: fi.ModTime(), Lines: m.Lines, PRs: m.PRs, Stats: m.Stats,
 	}
 	s.Title, s.TitleSource = title(m)
 
@@ -323,7 +343,7 @@ func procStartOf(pid int) string {
 
 // ---- scanning, with an offset cache --------------------------------------
 
-const cacheVersion = 2
+const cacheVersion = 3
 
 type cacheEntry struct {
 	Size    int64
@@ -433,6 +453,7 @@ var (
 	kPR      = []byte(`"type":"pr-link"`)
 	kBridge  = []byte(`"type":"bridge-session"`)
 	kUser    = []byte(`"type":"user"`)
+	kAsst    = []byte(`"type":"assistant"`)
 )
 
 const chunk = 1 << 20
@@ -520,8 +541,75 @@ func parseLine(line []byte, m *meta, whole bool) {
 		if json.Unmarshal(line, &v) == nil && v.Type == "bridge-session" {
 			m.Bridges = appendUnique(m.Bridges, normBridge(v.BridgeSessionId))
 		}
-	case m.FirstPrompt == "" && bytes.Contains(line, kUser):
-		m.FirstPrompt = userText(line)
+	case bytes.Contains(line, kUser) || bytes.Contains(line, kAsst):
+		// Either marker can also appear inside content, such as a tool result
+		// that read a transcript, so decode and go by the top-level type.
+		countTurn(line, m)
+	}
+}
+
+type turnEntry struct {
+	Type      string
+	IsMeta    bool `json:"isMeta"`
+	Timestamp string
+	Message   struct {
+		ID      string
+		Model   string
+		Content json.RawMessage
+		Usage   struct {
+			InputTokens              int64 `json:"input_tokens"`
+			OutputTokens             int64 `json:"output_tokens"`
+			CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+			CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+		}
+	}
+}
+
+func countTurn(line []byte, m *meta) {
+	var v turnEntry
+	if json.Unmarshal(line, &v) != nil || v.IsMeta {
+		return
+	}
+	st := &m.Stats
+	switch v.Type {
+	case "user":
+		t := contentText(v.Message.Content)
+		if t == "" {
+			return // a tool result or an injected block, not something you typed
+		}
+		st.Prompts++
+		if m.FirstPrompt == "" {
+			m.FirstPrompt = t
+		}
+	case "assistant":
+		var blocks []struct{ Type string }
+		json.Unmarshal(v.Message.Content, &blocks)
+		for _, b := range blocks {
+			if b.Type == "tool_use" {
+				st.ToolCalls++
+			}
+		}
+		if v.Message.ID == "" || v.Message.ID == st.LastMsgID {
+			break
+		}
+		st.LastMsgID = v.Message.ID
+		st.Turns++
+		u := v.Message.Usage
+		st.InTokens += u.InputTokens
+		st.OutTokens += u.OutputTokens
+		st.CacheRead += u.CacheReadInputTokens
+		st.CacheWrite += u.CacheCreationInputTokens
+		if v.Message.Model != "" && v.Message.Model != "<synthetic>" {
+			st.Models = appendUnique(st.Models, v.Message.Model)
+		}
+	default:
+		return
+	}
+	if v.Timestamp != "" {
+		if st.FirstAt == "" {
+			st.FirstAt = v.Timestamp
+		}
+		st.LastAt = v.Timestamp
 	}
 }
 
@@ -562,10 +650,15 @@ func userText(line []byte) string {
 	if json.Unmarshal(line, &v) != nil || v.Type != "user" || v.IsMeta {
 		return ""
 	}
+	return contentText(v.Message.Content)
+}
+
+// contentText is the typed text of a user message's content, or "".
+func contentText(content json.RawMessage) string {
 	var text string
-	if json.Unmarshal(v.Message.Content, &text) != nil {
+	if json.Unmarshal(content, &text) != nil {
 		var parts []struct{ Type, Text string }
-		if json.Unmarshal(v.Message.Content, &parts) != nil {
+		if json.Unmarshal(content, &parts) != nil {
 			return ""
 		}
 		for _, p := range parts {
