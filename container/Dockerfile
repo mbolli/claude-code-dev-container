@@ -127,8 +127,16 @@ RUN sed -i 's/^session\s\+required\s\+pam_loginuid.so/session    optional     pa
 COPY entrypoint.sh /entrypoint.sh
 COPY rebind-sessions.sh /usr/local/bin/rebind-sessions.sh
 COPY trust-develop.sh /usr/local/bin/trust-develop.sh
-COPY dev-sessions /usr/local/bin/dev-sessions
 RUN chmod +x /entrypoint.sh /usr/local/bin/rebind-sessions.sh \
-    /usr/local/bin/trust-develop.sh /usr/local/bin/dev-sessions
+    /usr/local/bin/trust-develop.sh
+
+# sessel: sessions by either id, peek, resume, delete, and a spawner per recent
+# repo for the phone. Last, so a change to it rebuilds only this layer. The Go
+# caches go to /tmp because GOPATH is under /home/dev, a volume at runtime.
+COPY sessel /tmp/sessel-src
+RUN cd /tmp/sessel-src \
+ && CGO_ENABLED=0 GOMODCACHE=/tmp/gomod GOCACHE=/tmp/gocache \
+    go build -trimpath -ldflags='-s -w' -o /usr/local/bin/sessel . \
+ && rm -rf /tmp/sessel-src /tmp/gomod /tmp/gocache
 
 ENTRYPOINT ["/entrypoint.sh"]
