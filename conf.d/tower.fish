@@ -145,15 +145,10 @@ function devrestart --description "Restart the develop container (Remote Control
     ssh tower 'docker restart claude-code'
 end
 
-function devrebuild --description "Rebuild the develop image and recreate the container"
-    ssh tower 'cd /mnt/user/appdata/claude-code
-        docker build -t claude-code:local . || exit 1
-        docker rm -f claude-code >/dev/null 2>&1
-        docker run -d --name claude-code --restart unless-stopped \
-            -p 2222:22 \
-            -v /mnt/user/appdata/claude-code/home:/home/dev \
-            -v /mnt/user/develop:/develop \
-            claude-code:local'
+function devrebuild --description "Rebuild the develop image and recreate the container (container/rebuild.sh)"
+    # rebuild.sh is the one place the run flags live. A copy of them here built
+    # from the pre-repo Dockerfile in appdata and dropped the docker socket.
+    ssh tower 'cd /mnt/user/develop/claude-code-dev-container/container && sh rebuild.sh'
 end
 
 function devtrust --description "Pre-accept the workspace trust dialog for every repo in /develop"
