@@ -113,6 +113,11 @@ ENV LANG=C.UTF-8
 RUN printf 'PATH=/usr/local/go/bin:$HOME/go/bin:$HOME/.local/bin:$PATH\nexport CLAUDE_PROFILE=tower\nexport LANG=C.UTF-8\n' \
       > /etc/profile.d/00-dev-path.sh
 
+# Mouse on, so the wheel reaches Claude and scrolls its text. With it off tmux
+# never asks the terminal for mouse events, the terminal turns the wheel into
+# arrow keys, and Claude pages through your prompt history instead.
+RUN printf 'set -g mouse on\n' > /etc/tmux.conf
+
 # UNRAID share convention: nobody:users == 99:100
 RUN useradd -u 99 -g 100 -m -d /home/dev -s /bin/bash dev \
     && mkdir -p /run/sshd
