@@ -204,10 +204,12 @@ subdirectories).
 | `devcode <repo>` | Open a repo in VS Code over Remote-SSH |
 | `devclone <owner/repo>` | Clone from GitHub into `/develop` and trust it |
 | `devlink` | Print the claude.ai/code environment URL, with QR and clipboard |
-| `devls` | List sessions and Remote Control environments |
+| `sessel [cmd]` | Browse, peek, resume and delete sessions (see below) |
+| `devwork <repo>` | Start or reattach a session for a repo, under tmux |
+| `devls` | List sessions with titles; either id in it works for `devresume` |
 | `devstatus` | Container status and Remote Control state |
 | `devrc` | Attach to the Remote Control tmux session |
-| `devresume [uuid] [dir]` | Resume a Claude session |
+| `devresume [id]` | Resume by uuid, `session_` id or claude.ai URL; the sessel TUI with none |
 | `devcontinue [dir]` | Continue the last session in a directory |
 | `devattach <id\|url> [dir]` | Re-attach a Remote Control session by id or URL |
 | `devhoststart` / `devhoststop` | Start or stop the Remote Control spawner |
@@ -225,14 +227,49 @@ mode requires. Press `w` in the pane to toggle when the cwd is a single repo.
 
 Two things that are easy to get wrong:
 
-**One Remote Control process serves one directory.** Sessions spawned from your
-phone start in the host's cwd, `/develop`, not in whichever repo you have open
-in VS Code. `devattach` detects when the spawner owns a directory and offers to
-stop it, attach, and restart it afterwards.
+**One Remote Control process serves one directory**, and the phone can only
+start sessions where one runs. The `/develop` host covers `/develop` itself;
+`sessel serve` runs one more per recently used repo, so those show up on the
+phone too. The entrypoint starts it at boot and it re-checks hourly.
 
-**A session you start yourself is not automatically reachable.** Running
-`claude` in a VS Code terminal creates a plain process the host knows nothing
-about. Run `/remote-control` inside that session to publish it.
+**Every session is on the phone.** The container's settings turn on
+`remoteControlAtStartup`, and `devwork` and sessel also pass `--remote-control`
+explicitly, named after the repo or the session's title.
+
+## sessel
+
+`sessel` (in `container/sessel`, Go, built into the image) knows every Claude
+session in the container by either of its two ids: the transcript uuid, which
+`claude --resume` takes, and the Remote Control id (`session_01…`, also
+`cse_01…` or the end of a claude.ai/code URL), which the phone shows. The
+Remote Control id changes every time a session is re-bridged, so the id on the
+phone is often an older one; sessel resolves all of them.
+
+Run it with no arguments for the browser, from the laptop as `sessel` or
+`devresume`:
+
+| Key | |
+| --- | --- |
+| `↑` `↓` | move; the right pane shows the title, both ids, PR links, the opening prompt and where the session stopped |
+| `enter` | resume it in its own tmux session, attach to it if it runs in tmux, or stop it and continue it in tmux if it runs outside |
+| `/` | filter by title, repo or id |
+| `space`, `d` | mark sessions, delete the marked ones or the current one |
+| `R` | rename, as `/rename` does; not for a running session, which writes its own title back |
+| `n` | new project: `/develop/<name>`, `git init`, served to the phone, first session opened |
+| `tab` | scroll the peek pane |
+
+The same things are subcommands: `sessel ls`, `open`, `peek`, `rename`, `rm`,
+`new`, `serve`, `resolve`, `json`. `sessel --help` lists them.
+
+**Delete is real.** It removes the transcript, the session's subagent and tool
+result directory, its file history, uploads, session env, scratchpad, registry
+records and the per-process key files. A running session is stopped first.
+Your prompt history (`~/.claude/history.jsonl`) and the project's memory stay.
+The session's entries on claude.ai are out of reach and stay listed there.
+`sessel rm -n <id>` shows exactly what would go.
+
+A session is live only if its pid still belongs to the same process: pids
+start from 1 after every rebuild, so an existing pid is often someone else.
 
 ### Session rebind on restart
 
