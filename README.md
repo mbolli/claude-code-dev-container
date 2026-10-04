@@ -275,18 +275,22 @@ start from 1 after every rebuild, so an existing pid is often someone else.
 ### Session rebind on restart
 
 Claude sessions are server-side objects, separate from the local transcript
-UUIDs under `~/.claude/projects`. `rebind-sessions.sh` snapshots each
-directory's `bridge-pointer.json` *before* the host starts, because the host
-pre-creates a session in its cwd and rewrites that pointer within a second,
-which would otherwise destroy the previous run's session id. Each recovered
-session comes back in its own tmux window.
+UUIDs under `~/.claude/projects`. The entrypoint snapshots the session registry
+(`~/.claude/sessions/*.json`) and each directory's `bridge-pointer.json`
+*before* the host starts, because new processes reuse the old pids and the host
+rewrites its pointer within a second. `rebind-sessions.sh` then brings back
+every bridged session active in the last `REBIND_MAX_AGE_H` hours: spawner
+sessions as windows in the `rc` tmux session, interactive `--remote-control`
+sessions resumed from their transcript in a tmux session of their old name. It
+skips only the session the host reclaims itself.
 
 Tunables, as environment variables read by the entrypoint:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `REBIND_ENABLE` | `1` | Rebind at all |
-| `REBIND_MAX` | `5` | Most sessions to restore |
+| `REBIND_MAX` | `10` | Most sessions to restore |
+| `REBIND_MAX_AGE_H` | `48` | Only sessions active within this many hours |
 | `REBIND_POINTERS` | `1` | Use the pointer snapshot |
 
 `cat /tmp/rebind.log` in the container shows the last run.

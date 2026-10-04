@@ -82,6 +82,18 @@ for ptr in "$HOME_DIR"/.claude/projects/*/bridge-pointer.json; do
 done
 chown 99:100 "$POINTER_LIST" 2>/dev/null || true
 
+# Same for the session registry: it knows every bridged session, not just the
+# newest per directory, but pids restart from 1 so new processes overwrite it.
+REGISTRY_LIST=/tmp/rebind-registry.tsv
+: > "$REGISTRY_LIST"
+for f in "$HOME_DIR"/.claude/sessions/*.json; do
+  [ -f "$f" ] || continue
+  jq -r '[.updatedAt // 0, .bridgeSessionId // "", .sessionId // "", .cwd // "",
+          .entrypoint // "", (.tmux // "" | split(":")[0]), .name // ""] | @tsv' \
+    "$f" >> "$REGISTRY_LIST" 2>/dev/null || true
+done
+chown 99:100 "$REGISTRY_LIST" 2>/dev/null || true
+
 # Remote Control under tmux so it survives docker exec sessions detaching.
 # If Claude isn't logged in yet the command exits and the window drops to a
 # shell, which is exactly where you'd run /login.
@@ -101,7 +113,9 @@ su dev -c "while sleep 3600; do sessel serve; done" >>/tmp/serve.log 2>&1 &
 # Backgrounded: it waits for the tmux session above and then adds windows, and
 # nothing else should block on it. See rebind-sessions.sh for the reasoning.
 su dev -c "cd $WORKDIR && REBIND_POINTER_LIST=$POINTER_LIST \
-  REBIND_ENABLE=${REBIND_ENABLE:-1} REBIND_MAX=${REBIND_MAX:-5} \
+  REBIND_REGISTRY_LIST=$REGISTRY_LIST \
+  REBIND_ENABLE=${REBIND_ENABLE:-1} REBIND_MAX=${REBIND_MAX:-10} \
+  REBIND_MAX_AGE_H=${REBIND_MAX_AGE_H:-48} \
   REBIND_POINTERS=${REBIND_POINTERS:-1} \
   /usr/local/bin/rebind-sessions.sh" >/tmp/rebind.log 2>&1 &
 
