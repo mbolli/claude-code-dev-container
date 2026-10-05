@@ -23,6 +23,7 @@ const (
 	developRoot = "/develop"
 	serveTmux   = "serve"
 	serveDays   = 14
+	reclaimAge  = 48 * time.Hour
 )
 
 var repoNameRe = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*$`)
@@ -40,6 +41,9 @@ func wantedRepos(st *Store) []string {
 		}
 		top := strings.SplitN(strings.TrimPrefix(s.Cwd, developRoot+"/"), "/", 2)[0]
 		set[filepath.Join(developRoot, top)] = true
+	}
+	for _, dir := range pinnedRepos() {
+		set[dir] = true
 	}
 	entries, _ := os.ReadDir(developRoot)
 	for _, e := range entries {
@@ -65,6 +69,33 @@ func wantedRepos(st *Store) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// pinnedRepos reads ~/.claude/serve-pins: repos served even when unused, one
+// name or /develop path per line, # for comments.
+func pinnedRepos() []string {
+	b, err := os.ReadFile(filepath.Join(claudeHome(), "serve-pins"))
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, line := range strings.Split(string(b), "\n") {
+		line, _, _ = strings.Cut(line, "#")
+		if line = strings.TrimSpace(line); line == "" {
+			continue
+		}
+		out = append(out, filepath.Join(developRoot, filepath.Base(line)))
+	}
+	return out
+}
+
+// recentPointer reports whether dir's bridge pointer was written within
+// reclaimAge. A spawner started without --no-create-session-in-dir takes that
+// session back, which is how sessions survive a container restart.
+func recentPointer(dir string) bool {
+	enc := strings.NewReplacer("/", "-", ".", "-").Replace(dir)
+	fi, err := os.Stat(filepath.Join(claudeHome(), "projects", enc, "bridge-pointer.json"))
+	return err == nil && time.Since(fi.ModTime()) < reclaimAge
 }
 
 type spawner struct {
@@ -164,7 +195,10 @@ func startSpawner(dir string) error {
 	}
 	name := filepath.Base(dir)
 	argv := []string{"claude", "remote-control", "--name", name,
-		"--spawn", "same-dir", "--no-create-session-in-dir", "--capacity", "4"}
+		"--spawn", "same-dir", "--capacity", "4"}
+	if !recentPointer(dir) {
+		argv = append(argv, "--no-create-session-in-dir")
+	}
 	var args []string
 	if hasTmuxSession(serveTmux) {
 		args = append([]string{"new-window", "-d", "-t", "=" + serveTmux + ":", "-n", name, "-c", dir}, argv...)

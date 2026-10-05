@@ -14,7 +14,9 @@
 #
 #   Crucially, the spawner host ALREADY reclaims the session in its own
 #   directory's pointer on startup. Rebinding that one races it and breaks it,
-#   so that session id is skipped. Other sessions in the same directory are not.
+#   so that session id is skipped. The same goes for every folder with a sessel
+#   spawner: only one remote-control may serve a folder, and the spawner takes
+#   back the folder's newest session itself.
 #
 #   Server ids live in two places. bridge-pointer.json holds only the MOST
 #   RECENT session per project directory. The registry (~/.claude/sessions/
@@ -44,6 +46,7 @@ set -uo pipefail
 
 HOME_DIR=${HOME_DIR:-/home/dev}
 TMUX_SESSION=${REBIND_TMUX_SESSION:-rc}
+SERVE_TMUX=${REBIND_SERVE_TMUX:-serve}
 PROJECTS="$HOME_DIR/.claude/projects"
 SKIP_FILE="$HOME_DIR/.claude/no-rebind"
 PIN_FILE="$HOME_DIR/.claude/rebind-sessions"
@@ -157,6 +160,14 @@ rebind_one() {
   # The host reclaims its pointer's session; racing it returns a 400.
   if [ "$origin" != "pinned" ] && [ "$sid" = "$HOST_SID" ]; then
     log "skip $sid ($origin) - already reclaimed by the main host"
+    return 0
+  fi
+
+  # Only one remote-control may serve a folder. A sessel spawner there takes
+  # back the folder's newest session itself; older ones need `sessel open`.
+  if [ "$dir" = "$REBIND_HOST_DIR" ] || \
+     tmux list-windows -t "=$SERVE_TMUX" -F '#{pane_current_path}' 2>/dev/null | grep -qxF "$dir"; then
+    log "skip $sid ($origin) - $dir has a spawner; it reclaims the newest session, reopen others with sessel open"
     return 0
   fi
 

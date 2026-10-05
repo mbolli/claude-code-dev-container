@@ -230,7 +230,11 @@ Two things that are easy to get wrong:
 **One Remote Control process serves one directory**, and the phone can only
 start sessions where one runs. The `/develop` host covers `/develop` itself;
 `sessel serve` runs one more per recently used repo, so those show up on the
-phone too. The entrypoint starts it at boot and it re-checks hourly.
+phone too. The entrypoint starts it at boot and it re-checks hourly. Repos
+listed in `~/.claude/serve-pins` (one name per line) are served even when
+unused. A spawner whose repo has a bridge pointer from the last 48 hours takes
+that session back on start, so the newest session per repo survives a restart.
+A second `remote-control` in a served folder fails with "already served".
 
 **Every session is on the phone.** The container's settings turn on
 `remoteControlAtStartup`, and `devwork` and sessel also pass `--remote-control`
@@ -281,8 +285,9 @@ UUIDs under `~/.claude/projects`. The entrypoint snapshots the session registry
 rewrites its pointer within a second. `rebind-sessions.sh` then brings back
 every bridged session active in the last `REBIND_MAX_AGE_H` hours: spawner
 sessions as windows in the `rc` tmux session, interactive `--remote-control`
-sessions resumed from their transcript in a tmux session of their old name. It
-skips only the session the host reclaims itself.
+sessions resumed from their transcript in a tmux session of their old name.
+Spawner sessions in a folder that has a spawner are left to it: it reclaims
+the newest one, and older ones come back with `sessel open`.
 
 Tunables, as environment variables read by the entrypoint:
 
