@@ -189,16 +189,21 @@ func trust(dir string) error {
 	return nil
 }
 
+func spawnerArgv(dir string) []string {
+	argv := []string{"claude", "remote-control", "--name", filepath.Base(dir),
+		"--spawn", "same-dir", "--capacity", "4"}
+	if !recentPointer(dir) {
+		argv = append(argv, "--no-create-session-in-dir")
+	}
+	return argv
+}
+
 func startSpawner(dir string) error {
 	if err := trust(dir); err != nil {
 		return err
 	}
 	name := filepath.Base(dir)
-	argv := []string{"claude", "remote-control", "--name", name,
-		"--spawn", "same-dir", "--capacity", "4"}
-	if !recentPointer(dir) {
-		argv = append(argv, "--no-create-session-in-dir")
-	}
+	argv := spawnerArgv(dir)
 	var args []string
 	if hasTmuxSession(serveTmux) {
 		args = append([]string{"new-window", "-d", "-t", "=" + serveTmux + ":", "-n", name, "-c", dir}, argv...)

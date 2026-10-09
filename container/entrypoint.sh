@@ -105,9 +105,10 @@ su dev -c "cd $WORKDIR && tmux new-session -d -s rc \
   'claude remote-control --name tower --spawn same-dir --capacity 8; exec bash'" || true
 
 # A spawner per recently used repo, so the phone can start sessions in any of
-# them rather than only /develop. Reconciled hourly; see sessel serve.
+# them rather than only /develop. Reconciled hourly; see sessel serve. The same
+# loop moves idle spawners and sessions onto a newer claude (sessel upgrade).
 su dev -c "sessel serve" >/tmp/serve.log 2>&1 || true
-su dev -c "while sleep 3600; do sessel serve; done" >>/tmp/serve.log 2>&1 &
+su dev -c "while sleep 3600; do sessel serve; sessel upgrade; done" >>/tmp/serve.log 2>&1 &
 
 # Re-attach sessions from the previous run, each in its own tmux window.
 # Backgrounded: it waits for the tmux session above and then adds windows, and

@@ -236,6 +236,15 @@ unused. A spawner whose repo has a bridge pointer from the last 48 hours takes
 that session back on start, so the newest session per repo survives a restart.
 A second `remote-control` in a served folder fails with "already served".
 
+**Updates need a restart.** The updater only repoints `~/.local/bin/claude`;
+running processes keep their binary, and a spawner starts its sessions with its
+own. `sessel upgrade` runs `claude update`, then restarts every spawner and
+interactive `--remote-control` session on an older version, but only once its
+sessions have been idle for 10 minutes and nobody is attached to the tmux
+session. A restarted spawner takes back its newest session; older ones come
+back when someone writes to them, possibly under another repo's spawner. It
+runs hourly after `sessel serve`.
+
 **Every session is on the phone.** The container's settings turn on
 `remoteControlAtStartup`, and `devwork` and sessel also pass `--remote-control`
 explicitly, named after the repo or the session's title.
@@ -264,7 +273,7 @@ Run it with no arguments for the browser, from the laptop as `sessel` or
 | `tab` | scroll the right pane; a live session's peek follows its newest turns |
 
 The same things are subcommands: `sessel ls`, `open`, `peek`, `rename`, `rm`,
-`new`, `serve`, `resolve`, `json`. `sessel --help` lists them.
+`new`, `serve`, `upgrade`, `resolve`, `json`. `sessel --help` lists them.
 
 **Delete is real.** It removes the transcript, the session's subagent and tool
 result directory, its file history, uploads, session env, scratchpad, registry

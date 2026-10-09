@@ -22,6 +22,7 @@ const usage = `sessel: Claude Code sessions on this container
   sessel rm [-n] [-f] <id>...   delete for real (-n: only list, -f: no prompt)
   sessel new <name>             create /develop/<name>, git init, serve it to the phone
   sessel serve [-n] [-status]   keep a spawner per recent repo, for the phone
+  sessel upgrade [-n]           restart idle spawners and sessions on the newest claude
 
 <id> is a transcript uuid, a session_01… or cse_01… id, or a claude.ai/code URL.
 `
@@ -51,6 +52,8 @@ func main() {
 		err = cmdNew(args)
 	case "serve":
 		err = cmdServe(args)
+	case "upgrade":
+		err = cmdUpgrade(args)
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return
