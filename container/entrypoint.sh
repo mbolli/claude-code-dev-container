@@ -94,9 +94,12 @@ for f in "$HOME_DIR"/.claude/sessions/*.json; do
 done
 chown 99:100 "$REGISTRY_LIST" 2>/dev/null || true
 
+# Everything below needs a working login. Without one, remote-control exits at
+# once and the rebind windows give up after three tries, so nothing comes back
+# after a later /login. Wait for the login first, in the background so sshd and
+# the shell stay usable for running /login. Progress lands in /tmp/login.log.
+start_remote_control() {
 # Remote Control under tmux so it survives docker exec sessions detaching.
-# If Claude isn't logged in yet the command exits and the window drops to a
-# shell, which is exactly where you'd run /login.
 #
 # same-dir, not worktree: $WORKDIR holds many repos and is not itself a git
 # repository, which worktree mode requires. Press 'w' in the pane to toggle at
@@ -119,5 +122,9 @@ su dev -c "cd $WORKDIR && REBIND_POINTER_LIST=$POINTER_LIST \
   REBIND_MAX_AGE_H=${REBIND_MAX_AGE_H:-48} \
   REBIND_POINTERS=${REBIND_POINTERS:-1} \
   /usr/local/bin/rebind-sessions.sh" >/tmp/rebind.log 2>&1 &
+}
+
+( su dev -c /usr/local/bin/wait-for-login.sh >/tmp/login.log 2>&1
+  start_remote_control ) &
 
 wait $SSHD_PID
