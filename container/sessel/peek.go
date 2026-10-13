@@ -226,6 +226,9 @@ func stateWords(s *Session) string {
 	case LiveTmux:
 		return "running in tmux " + s.Tmux
 	case LiveOutside:
+		if s.Spawner != "" {
+			return fmt.Sprintf("running headless under the %s spawner (pid %d)", spawnerName(s.Spawner), s.PID)
+		}
 		return fmt.Sprintf("running outside tmux (pid %d)", s.PID)
 	}
 	return "not running"

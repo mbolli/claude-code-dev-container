@@ -562,10 +562,13 @@ func (m *model) View() string {
 	// Clamp before boxing: lipgloss wraps a line wider than its box and treats
 	// Height as a minimum, so one long peek line would push the footer, where
 	// every prompt and confirm lives, off the screen.
+	// A confirm may wrap to three lines; the boxes give up the room.
+	footer := ansi.Wrap(m.viewFooter(), m.w, " ")
+	fh := min(3, strings.Count(footer, "\n")+1)
 	body := lipgloss.JoinHorizontal(lipgloss.Top,
-		sBorder.Render(clamp(list, m.listWidth(), m.listHeight())),
-		pane.Render(clamp(m.peek.View(), m.peek.Width, m.peek.Height)))
-	return lipgloss.JoinVertical(lipgloss.Left, body, clamp(m.viewFooter(), m.w, 1))
+		sBorder.Render(clamp(list, m.listWidth(), max(1, m.listHeight()-fh+1))),
+		pane.Render(clamp(m.peek.View(), m.peek.Width, max(1, m.peek.Height-fh+1))))
+	return lipgloss.JoinVertical(lipgloss.Left, body, clamp(footer, m.w, fh))
 }
 
 func (m *model) viewList() string {
@@ -625,8 +628,7 @@ func (m *model) viewFooter() string {
 	case filtering, renaming, naming:
 		return " " + sHeading.Render(m.label+": ") + m.input.View() + sDim.Render("   enter ok · esc cancel")
 	case confirmMove:
-		s := m.pending[0]
-		return " " + sWarn.Render(fmt.Sprintf("%q runs outside tmux (pid %d). Stop it and continue it in tmux? y/N", oneLine(s.Title, 40), s.PID))
+		return " " + sWarn.Render(MoveQuestion(m.pending[0], 40)+" y/N")
 	case confirmDelete:
 		return " " + sWarn.Render(m.summary)
 	}

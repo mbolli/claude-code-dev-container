@@ -131,6 +131,29 @@ func Start(dir string) error {
 	return execTmux("=" + name)
 }
 
+// MoveQuestion asks before Open stops a session that has no pane of its own.
+func MoveQuestion(s *Session, titleW int) string {
+	t := oneLine(s.Title, titleW)
+	if s.Spawner == "" {
+		return fmt.Sprintf("%q runs outside tmux (pid %d). Stop it and continue it in tmux?", t, s.PID)
+	}
+	q := fmt.Sprintf("%q runs headless under the %s spawner, no screen to attach to. "+
+		"Stop it and continue it in tmux? The phone keeps it under a new link", t, spawnerName(s.Spawner))
+	if s.Busy {
+		q += ", and it is mid-reply: stopping now cuts that reply off"
+	}
+	return q + "."
+}
+
+// spawnerName turns a spawner's pane (serve:@19.%19) into its window name.
+func spawnerName(pane string) string {
+	out, err := tmuxCmd("display-message", "-p", "-t", pane, "#{window_name}").Output()
+	if name := strings.TrimSpace(string(out)); err == nil && name != "" {
+		return name
+	}
+	return pane
+}
+
 // Open does what Enter does: resume, attach, or move into tmux.
 func Open(s *Session) error {
 	switch s.State {

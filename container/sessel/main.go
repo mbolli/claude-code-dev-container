@@ -138,8 +138,7 @@ func cmdOpen(args []string) error {
 		return err
 	}
 	if s.State == LiveOutside {
-		q := fmt.Sprintf("%q runs outside tmux (pid %d). Stop it and continue it in tmux?", oneLine(s.Title, 50), s.PID)
-		if !confirm(q) {
+		if !confirm(MoveQuestion(s, 50)) {
 			return fmt.Errorf("left as it is")
 		}
 	}

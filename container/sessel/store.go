@@ -95,6 +95,8 @@ type Session struct {
 	StateName   string    `json:"state"`
 	PID         int       `json:"pid,omitempty"`
 	Tmux        string    `json:"tmux,omitempty"`
+	Spawner     string    `json:"spawner,omitempty"` // tmux pane of the remote-control spawner that runs it
+	Busy        bool      `json:"busy,omitempty"`
 	procStart   string    // re-checked before signalling PID
 }
 
@@ -130,14 +132,16 @@ type Store struct {
 }
 
 type regRecord struct {
-	SessionID string `json:"sessionId"`
-	Bridge    string `json:"bridgeSessionId"`
-	Cwd       string `json:"cwd"`
-	PID       int    `json:"pid"`
-	ProcStart string `json:"procStart"`
-	Tmux      string `json:"tmux"`
-	UpdatedAt int64  `json:"updatedAt"`
-	file      string
+	SessionID  string `json:"sessionId"`
+	Bridge     string `json:"bridgeSessionId"`
+	Cwd        string `json:"cwd"`
+	PID        int    `json:"pid"`
+	ProcStart  string `json:"procStart"`
+	Tmux       string `json:"tmux"`
+	Entrypoint string `json:"entrypoint"`
+	Status     string `json:"status"`
+	UpdatedAt  int64  `json:"updatedAt"`
+	file       string
 }
 
 func claudeHome() string {
@@ -225,10 +229,15 @@ func (st *Store) session(path string, fi os.FileInfo, m meta) *Session {
 
 	for _, r := range recs {
 		if alive(r.PID, r.ProcStart) {
-			s.PID, s.procStart = r.PID, r.ProcStart
-			if r.Tmux != "" {
+			s.PID, s.procStart, s.Busy = r.PID, r.ProcStart, r.Status == "busy"
+			// A spawner's sessions run headless (sdk-cli) and inherit the
+			// spawner's TMUX_PANE, so that pane shows the spawner, not them.
+			switch {
+			case r.Entrypoint == "sdk-cli":
+				s.State, s.Spawner = LiveOutside, r.Tmux
+			case r.Tmux != "":
 				s.State, s.Tmux = LiveTmux, r.Tmux
-			} else {
+			default:
 				s.State = LiveOutside
 			}
 			break
