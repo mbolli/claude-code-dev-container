@@ -16,7 +16,9 @@
 #   directory's pointer on startup. Rebinding that one races it and breaks it,
 #   so that session id is skipped. The same goes for every folder with a sessel
 #   spawner: only one remote-control may serve a folder, and the spawner takes
-#   back the folder's newest session itself.
+#   back the session in the folder's pointer itself. That is only ever the
+#   spawner's own pre-created session, so the others it ran (started from the
+#   phone) are resumed from their transcripts with `sessel open -d`.
 #
 #   Server ids live in two places. bridge-pointer.json holds only the MOST
 #   RECENT session per project directory. The registry (~/.claude/sessions/
@@ -90,9 +92,9 @@ cwd_for_project() {
   return 1
 }
 
-# The session the host reclaims: the one in its own directory's pointer.
-host_sid() {
-  local pdir="$PROJECTS/$(printf '%s' "$REBIND_HOST_DIR" | tr '/.' '--')" sid pd
+# The session a spawner in dir reclaims: the one in that directory's pointer.
+pointer_sid() {
+  local pdir="$PROJECTS/$(printf '%s' "$1" | tr '/.' '--')" sid pd
   if [ -n "$REBIND_POINTER_LIST" ] && [ -s "$REBIND_POINTER_LIST" ]; then
     while IFS=$'\t' read -r sid pd; do
       [ "$pd" = "$pdir" ] && { echo "$sid"; return 0; }
@@ -101,7 +103,7 @@ host_sid() {
     grep -o '"sessionId":"[^"]*"' "$pdir/bridge-pointer.json" | sed -E 's/^"sessionId":"(.*)"$/\1/'
   fi
 }
-HOST_SID=$(host_sid)
+HOST_SID=$(pointer_sid "$REBIND_HOST_DIR")
 
 launched=0
 declare -A seen=()
@@ -111,8 +113,9 @@ declare -A seen=()
 resume_cli() {
   local sid=$1 uuid=$2 dir=$3 tsess=$4 name=$5
 
-  [ -n "${seen[$sid]:-}" ] && return 0
-  seen[$sid]=1
+  # A transcript can sit under several server ids; resume it once.
+  [ -n "${seen[$sid]:-}${seen[$uuid]:-}" ] && return 0
+  seen[$sid]=1 seen[$uuid]=1
   if is_skipped "$sid"; then log "skip $sid (registry) - listed in no-rebind"; return 0; fi
   if [ -z "$dir" ] || [ ! -d "$dir" ]; then
     log "skip $sid (registry) - directory '${dir:-unknown}' does not exist"; return 0
@@ -137,7 +140,7 @@ resume_cli() {
 }
 
 rebind_one() {
-  local sid=$1 dir=$2 origin=$3 label
+  local sid=$1 dir=$2 origin=$3 uuid=${4:-} label
 
   [ -n "${seen[$sid]:-}" ] && return 0
   seen[$sid]=1
@@ -164,10 +167,25 @@ rebind_one() {
   fi
 
   # Only one remote-control may serve a folder. A sessel spawner there takes
-  # back the folder's newest session itself; older ones need `sessel open`.
+  # back its pointer's session; the others continue from their transcripts.
   if [ "$dir" = "$REBIND_HOST_DIR" ] || \
      tmux list-windows -t "=$SERVE_TMUX" -F '#{pane_current_path}' 2>/dev/null | grep -qxF "$dir"; then
-    log "skip $sid ($origin) - $dir has a spawner; it reclaims the newest session, reopen others with sessel open"
+    if [ "$sid" = "$(pointer_sid "$dir")" ]; then
+      log "skip $sid ($origin) - the spawner in $dir reclaims it"
+    elif [ -z "$uuid" ]; then
+      log "skip $sid ($origin) - $dir has a spawner and no transcript is known to resume"
+    elif [ -n "${seen[$uuid]:-}" ]; then
+      return 0
+    elif [ "$REBIND_DRYRUN" = "1" ]; then
+      seen[$uuid]=1
+      log "DRYRUN would resume $uuid in $dir with sessel open -d ($sid)"
+      launched=$((launched + 1))
+    else
+      seen[$uuid]=1
+      log "resuming $uuid in $dir with sessel open -d ($sid)"
+      sessel open -d "$uuid" 2>&1 | sed 's/^/[rebind]   /'
+      launched=$((launched + 1))
+    fi
     return 0
   fi
 
@@ -221,7 +239,7 @@ if [ -n "$REBIND_REGISTRY_LIST" ] && [ -s "$REBIND_REGISTRY_LIST" ]; then
     if [ "$entry" = "cli" ]; then
       resume_cli "$sid" "$uuid" "$dir" "$tsess" "$name"
     else
-      rebind_one "$sid" "$dir" "registry"
+      rebind_one "$sid" "$dir" "registry" "$uuid"
     fi
   done < <(sort -t$'\t' -k1,1nr "$REBIND_REGISTRY_LIST")
 fi

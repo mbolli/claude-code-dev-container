@@ -14,7 +14,8 @@ const usage = `sessel: Claude Code sessions on this container
 
   sessel                        browse them (TUI)
   sessel ls [-a]                table, newest first (-a: include /tmp scratchpads)
-  sessel open <id>              what Enter does: resume, attach, or move into tmux
+  sessel open [-d] <id>         what Enter does: resume, attach, or move into tmux
+                                (-d: resume a stopped one in tmux, don't attach)
   sessel resolve <id>           uuid, cwd, state (dead|tmux|outside), tmux target
   sessel json                   every session, for tools
   sessel peek <id>              what the session was about and where it stopped
@@ -130,11 +131,24 @@ func cmdResolve(args []string) error {
 }
 
 func cmdOpen(args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("usage: sessel open <id>")
+	fl := flag.NewFlagSet("open", flag.ExitOnError)
+	detached := fl.Bool("d", false, "resume a stopped session in tmux without attaching")
+	fl.Parse(args)
+	if fl.NArg() != 1 {
+		return fmt.Errorf("usage: sessel open [-d] <id>")
 	}
-	s, err := mustLoad().Resolve(args[0])
+	s, err := mustLoad().Resolve(fl.Arg(0))
 	if err != nil {
+		return err
+	}
+	if *detached {
+		if s.State != Dead {
+			return fmt.Errorf("%s is still running", s.UUID)
+		}
+		name, err := ResumeDetached(s)
+		if err == nil {
+			fmt.Printf("resumed %s in tmux %s\n", s.UUID, name)
+		}
 		return err
 	}
 	if s.State == LiveOutside {

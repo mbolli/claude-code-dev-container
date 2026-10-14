@@ -93,9 +93,31 @@ func pinnedRepos() []string {
 // reclaimAge. A spawner started without --no-create-session-in-dir takes that
 // session back, which is how sessions survive a container restart.
 func recentPointer(dir string) bool {
-	enc := strings.NewReplacer("/", "-", ".", "-").Replace(dir)
-	fi, err := os.Stat(filepath.Join(claudeHome(), "projects", enc, "bridge-pointer.json"))
+	fi, err := os.Stat(pointerPath(dir))
 	return err == nil && time.Since(fi.ModTime()) < reclaimAge
+}
+
+func pointerPath(dir string) string {
+	enc := strings.NewReplacer("/", "-", ".", "-").Replace(dir)
+	return filepath.Join(claudeHome(), "projects", enc, "bridge-pointer.json")
+}
+
+// reclaimedSession is the Remote Control id a spawner started now in dir takes
+// back, or "". Only the spawner's own pre-created session is ever in the
+// pointer; sessions started from the phone never are.
+func reclaimedSession(dir string) string {
+	if !recentPointer(dir) {
+		return ""
+	}
+	b, err := os.ReadFile(pointerPath(dir))
+	if err != nil {
+		return ""
+	}
+	var v struct {
+		SessionID string `json:"sessionId"`
+	}
+	json.Unmarshal(b, &v)
+	return v.SessionID
 }
 
 type spawner struct {

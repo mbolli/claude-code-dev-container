@@ -101,11 +101,17 @@ func callerClient() (string, error) {
 // Resume opens a session that is not running, in its own tmux session, with
 // Remote Control on and the title as the name the phone shows.
 func Resume(s *Session) error {
-	name := tmuxName(s.Cwd) + "-" + s.UUID[:8]
-	if err := ensureSession(name, s.Cwd, "claude", "--remote-control", s.Title, "--resume", s.UUID); err != nil {
+	name, err := ResumeDetached(s)
+	if err != nil {
 		return err
 	}
 	return execTmux("=" + name)
+}
+
+// ResumeDetached starts Resume's tmux session without attaching to it.
+func ResumeDetached(s *Session) (string, error) {
+	name := tmuxName(s.Cwd) + "-" + s.UUID[:8]
+	return name, ensureSession(name, s.Cwd, "claude", "--remote-control", s.Title, "--resume", s.UUID)
 }
 
 // Attach goes to the pane a live session runs in (session:@window.%pane).

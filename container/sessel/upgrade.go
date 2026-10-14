@@ -15,9 +15,9 @@ import (
 
 // The updater only repoints ~/.local/bin/claude; running processes keep their
 // binary, and a spawner starts its sessions with its own. upgrade restarts
-// whatever runs an older version, but only once it has been idle for a while:
-// a restarted spawner takes back its newest session, the others come back the
-// next time someone writes to them.
+// whatever runs an older version, but only once it has been idle for a while.
+// A restarted spawner registers a new environment and takes back only the
+// session in its bridge pointer; its other sessions are resumed in tmux.
 
 const quietFor = 10 * time.Minute
 
@@ -28,6 +28,7 @@ type regEntry struct {
 	Name            string `json:"name"`
 	Cwd             string `json:"cwd"`
 	Entrypoint      string `json:"entrypoint"`
+	BridgeSessionID string `json:"bridgeSessionId"`
 	Status          string `json:"status"`
 	StatusUpdatedAt int64  `json:"statusUpdatedAt"`
 }
@@ -167,7 +168,8 @@ func cmdUpgrade(args []string) error {
 		}
 		args := cmdline(pid)
 		label := fmt.Sprintf("%s:%s (%s, %s)", p.Session, p.Window, ver, strings.Join(args[1:min(len(args), 3)], " "))
-		var argv []string // empty: respawn with the pane's own start command
+		var argv []string      // empty: respawn with the pane's own start command
+		var orphans []regEntry // spawner sessions the restarted spawner will not take back
 		switch {
 		case has(args, "remote-control") && has(args, "--spawn"):
 			for _, c := range childrenOf(pid) {
@@ -178,6 +180,12 @@ func cmdUpgrade(args []string) error {
 			}
 			if p.Session == serveTmux {
 				argv = spawnerArgv(p.Path)
+			}
+			keep := reclaimedSession(p.Path)
+			for _, c := range childrenOf(pid) {
+				if r := reg[c]; r.SessionID != "" && (keep == "" || r.BridgeSessionID != keep) {
+					orphans = append(orphans, r)
+				}
 			}
 		case has(args, "--remote-control"):
 			r, ok := reg[pid]
@@ -203,11 +211,18 @@ func cmdUpgrade(args []string) error {
 			}
 			out, err := tmuxCmd(rargs...).CombinedOutput()
 			tmuxCmd("set-option", "-p", "-u", "-t", p.ID, "remain-on-exit").Run()
+			for _, r := range orphans {
+				resumeOrphan(r)
+			}
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "sessel: %s: %s\n", label, strings.TrimSpace(string(out)))
 				continue
 			}
 			restarted++
+		} else {
+			for _, r := range orphans {
+				fmt.Printf("resume %s (%s) in tmux\n", r.SessionID, r.Name)
+			}
 		}
 	next:
 	}
@@ -215,6 +230,28 @@ func cmdUpgrade(args []string) error {
 		fmt.Printf("nothing restarted, latest is %s\n", latest)
 	}
 	return nil
+}
+
+// resumeOrphan continues a session whose spawner was replaced, as sessel open
+// does. Its Remote Control id changes: a folder with a spawner has no room for
+// a second remote-control server to reattach the old one.
+func resumeOrphan(r regEntry) {
+	for i := 0; i < 30 && alive(r.PID, r.ProcStart); i++ {
+		time.Sleep(500 * time.Millisecond)
+	}
+	s, err := mustLoad().Resolve(r.SessionID)
+	if err == nil && s.State != Dead {
+		err = fmt.Errorf("still running")
+	}
+	if err == nil {
+		var name string
+		if name, err = ResumeDetached(s); err == nil {
+			fmt.Printf("resume %s (%s) in tmux %s\n", s.UUID, s.Title, name)
+		}
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sessel: resume %s: %v\n", r.SessionID, err)
+	}
 }
 
 func stop(pid int) {
