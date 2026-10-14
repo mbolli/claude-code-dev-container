@@ -269,7 +269,9 @@ function devhoststop --description "Stop the Remote Control spawner (frees /deve
         echo "not running"
         return 1
     end
-    __dev_ssh "kill $owner"; and echo "stopped (pid $owner)"
+    # the entrypoint runs it in a restart loop; end that first or it comes back
+    __dev_ssh "p=\$(ps -o ppid= -p $owner); ps -o args= -p \$p | grep -q 'while :' && kill \$p; kill $owner"
+    and echo "stopped (pid $owner)"
 end
 
 function devhoststart --description "Start the Remote Control spawner in /develop"
@@ -278,7 +280,7 @@ function devhoststart --description "Start the Remote Control spawner in /develo
         echo "already running (pid $owner)"
         return 0
     end
-    __dev_ssh 'c="claude remote-control --name tower --spawn same-dir --capacity 8; exec bash"
+    __dev_ssh 'c="while :; do claude remote-control --name tower --spawn same-dir --capacity 8; sleep 5; done"
         if tmux has-session -t rc 2>/dev/null; then
             tmux new-window -t rc -c /develop "$c"
         else

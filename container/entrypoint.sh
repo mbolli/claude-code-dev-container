@@ -103,9 +103,10 @@ start_remote_control() {
 #
 # same-dir, not worktree: $WORKDIR holds many repos and is not itself a git
 # repository, which worktree mode requires. Press 'w' in the pane to toggle at
-# runtime when the cwd is a single repo.
+# runtime when the cwd is a single repo. The host exits when its session is
+# deleted on claude.ai, so it restarts in a loop; devhoststop ends both.
 su dev -c "cd $WORKDIR && tmux new-session -d -s rc \
-  'claude remote-control --name tower --spawn same-dir --capacity 8; exec bash'" || true
+  'while :; do claude remote-control --name tower --spawn same-dir --capacity 8; sleep 5; done'" || true
 
 # A spawner per recently used repo, so the phone can start sessions in any of
 # them rather than only /develop. Reconciled hourly; see sessel serve. The same
