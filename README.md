@@ -17,13 +17,14 @@ phone without the laptop staying awake.
 conf.d/      client side: the dev* commands          (fisher installs these)
 completions/ client side: tab completion for them    (fisher installs these)
 container/   server side: image, entrypoint, helper scripts
+docs/        images for this README
 install.fish fisher-less installer, symlinks into ~/.config/fish
 ```
 
 `conf.d/` and `completions/` sit at the repo root because that is the only
 place [fisher](https://github.com/jorgebucaran/fisher) looks. Fisher copies
 `functions/`, `completions/`, `conf.d/` and `themes/` from the root and ignores
-everything else, so `container/` and this README are simply skipped.
+everything else, so `container/`, `docs/` and this README are simply skipped.
 
 ## The container
 
@@ -42,6 +43,8 @@ script instead.
 | `entrypoint.sh` | sshd, Claude install, Remote Control host, session rebind |
 | `trust-develop.sh` | Pre-accepts the workspace trust dialog for every repo |
 | `rebind-sessions.sh` | Restores the previous run's Claude sessions on start |
+| `wait-for-login.sh` | Holds Remote Control back until Claude can make an API call |
+| `sessel/` | The session browser and spawner manager, see [sessel](#sessel) |
 | `rebuild.sh` | Build and recreate the container |
 
 ### Persistence boundary
@@ -70,10 +73,10 @@ pins. Only the three `ARG` lines at the top of the `Dockerfile` are pinned.
 
 | | Version | Why |
 | --- | --- | --- |
-| nodejs | 24.19 | Runs Claude Code and most tooling. From sid, so no NodeSource repo |
-| npm | 11.16 | Ships with nodejs |
+| nodejs | 24.21 | Runs Claude Code and most tooling. From sid, so no NodeSource repo |
+| npm | 12.0 | Ships with nodejs |
 | python3 | 3.14 | From sid. `pipx` and `venv` included |
-| php | 8.5.9 | From Sury's trixie suite: Debian sid has not done the 8.5 transition yet |
+| php | 8.5.11 | From Sury's trixie suite: Debian sid has not done the 8.5 transition yet |
 | go | 1.26.5 | Pinned via `ARG GO_VERSION`, installed from go.dev |
 
 **PHP extensions worth calling out**
@@ -89,38 +92,38 @@ pins. Only the three `ARG` lines at the top of the `Dockerfile` are pinned.
 
 | | Version | Why |
 | --- | --- | --- |
-| composer | 2.10.2 | PHP dependencies |
-| pnpm | 11.22 | Preferred node package manager |
+| composer | 2.10.3 | PHP dependencies |
+| pnpm | 12.6 | Preferred node package manager |
 | yarn | 1.22 | For repos that still expect it |
-| uv | 0.12.5 | Lets individual projects pin their own Python without rebuilding the image |
+| uv | 0.12.20 | Lets individual projects pin their own Python without rebuilding the image |
 | task | 3.45.4 | Pinned via `ARG TASK_VERSION` |
 
 **Browser and media**
 
 | | Version | Why |
 | --- | --- | --- |
-| chromium | 151 | From apt, so puppeteer and lighthouse reuse it instead of each downloading a copy |
-| lighthouse | 13.4.1 | Audits, against the apt chromium |
-| ffmpeg | 8.1.2 | Media conversion |
+| chromium | 154 | From apt, so puppeteer and lighthouse reuse it instead of each downloading a copy |
+| lighthouse | 13.5.0 | Audits, against the apt chromium |
+| ffmpeg | 9.0.2 | Media conversion |
 | imagemagick | 7.1.2 | Image conversion |
 
 **Shell and CLI**
 
 | | Version | Why |
 | --- | --- | --- |
-| claude | 2.1.237 | Installed by `entrypoint.sh` into the persisted home, not into the image |
+| claude | updates itself | Installed by `entrypoint.sh` into the persisted home, not into the image |
 | git | 2.55.0 | |
 | gh | 2.46.0 | Used by `devclone` |
-| tmux | 3.7b | Holds the Remote Control host and rebound sessions |
+| tmux | 3.7c | Holds the Remote Control host and rebound sessions |
 | ripgrep | 15.2.0 | Claude Code leans on it for search |
-| fd | 10.4.2 | Symlinked from `fdfind` |
+| fd | 10.5.0 | Symlinked from `fdfind` |
 | bat | 0.26.1 | Symlinked from `batcat` |
 | jq | 1.8.2 | |
 | shellcheck | 0.11.0 | |
 | sqlite3 | 3.53.4 | |
-| mariadb-client | 11.8.8 | Matches the mariadb container it talks to |
+| mariadb-client | 11.8.9 | Matches the mariadb container it talks to |
 | mdbook | 0.5.4 | |
-| rsync | 3.5.0 | |
+| rsync | 3.5.1 | |
 
 Both `fd` and `bat` are symlinked into `/usr/local/bin` because Debian ships
 them as `fdfind` and `batcat` to avoid name clashes.
@@ -166,7 +169,7 @@ Host tower-dev
 
 `tower` reaches the Docker host, `tower-dev` reaches the container. Put your
 public key in `/home/dev/.ssh/authorized_keys` inside the volume. The fish
-commands use both aliases, so keep the names or edit `fish/conf.d/tower.fish`.
+commands use both aliases, so keep the names or edit `conf.d/tower.fish`.
 
 ## The fish commands
 
@@ -222,6 +225,8 @@ subdirectories).
 `same-dir` mode with capacity 8. `same-dir` rather than `worktree` because
 `/develop` holds many repos and is not itself a git repository, which worktree
 mode requires. Press `w` in the pane to toggle when the cwd is a single repo.
+The host exits when its own session is deleted on claude.ai, so it runs in a
+restart loop; `devhoststop` ends the loop too.
 
 `devlink` gives you the URL and QR code to open on your phone.
 
@@ -233,7 +238,9 @@ start sessions where one runs. The `/develop` host covers `/develop` itself;
 phone too. The entrypoint starts it at boot and it re-checks hourly. Repos
 listed in `~/.claude/serve-pins` (one name per line) are served even when
 unused. A spawner whose repo has a bridge pointer from the last 48 hours takes
-that session back on start, so the newest session per repo survives a restart.
+that session back on start. The pointer only ever holds the spawner's own
+pre-created session; sessions started from the phone are resumed from their
+transcripts instead, under a new Remote Control id.
 A second `remote-control` in a served folder fails with "already served".
 
 **Updates need a restart.** The updater only repoints `~/.local/bin/claude`;
@@ -241,9 +248,10 @@ running processes keep their binary, and a spawner starts its sessions with its
 own. `sessel upgrade` runs `claude update`, then restarts every spawner and
 interactive `--remote-control` session on an older version, but only once its
 sessions have been idle for 10 minutes and nobody is attached to the tmux
-session. A restarted spawner takes back its newest session; older ones come
-back when someone writes to them, possibly under another repo's spawner. It
-runs hourly after `sessel serve`.
+session. A restarted spawner takes back only the session in its bridge
+pointer, its own pre-created one; the sessions it ran for the phone are resumed
+with `sessel open -d`, under a new Remote Control id. It runs hourly after
+`sessel serve`.
 
 **Every session is on the phone.** The container's settings turn on
 `remoteControlAtStartup`, and `devwork` and sessel also pass `--remote-control`
@@ -261,16 +269,21 @@ phone is often an older one; sessel resolves all of them.
 Run it with no arguments for the browser, from the laptop as `sessel` or
 `devresume`:
 
+![sessel: sessions on the left, the selected one's ids, opening prompt and last turns on the right](docs/sessel.png)
+
 | Key | |
 | --- | --- |
 | `↑` `↓` | move; the right pane shows the title, both ids, PR links, the opening prompt and where the session stopped |
-| `enter` | resume it in its own tmux session, attach to it if it runs in tmux, or stop it and continue it in tmux if it runs outside |
+| `enter` | resume it in its own tmux session, attach to it if it runs in tmux, or stop it and continue it in tmux if it runs outside or headless under a spawner (asks first) |
 | `/` | filter by title, repo or id |
 | `space`, `d` | mark sessions, delete the marked ones or the current one |
 | `R` | rename, as `/rename` does; not for a running session, which writes its own title back |
 | `n` | new project: `/develop/<name>`, `git init`, served to the phone, first session opened |
 | `s` | switch the right pane between the peek and stats: size on disk, prompts, turns, tool calls, tokens, models, when it started |
 | `tab` | scroll the right pane; a live session's peek follows its newest turns |
+| `a` | also show `/tmp` scratchpad sessions |
+| `r` | reload |
+| `q` | quit |
 
 The same things are subcommands: `sessel ls`, `open`, `peek`, `rename`, `rm`,
 `new`, `serve`, `upgrade`, `resolve`, `json`. `sessel --help` lists them.
@@ -293,10 +306,11 @@ UUIDs under `~/.claude/projects`. The entrypoint snapshots the session registry
 *before* the host starts, because new processes reuse the old pids and the host
 rewrites its pointer within a second. `rebind-sessions.sh` then brings back
 every bridged session active in the last `REBIND_MAX_AGE_H` hours: spawner
-sessions as windows in the `rc` tmux session, interactive `--remote-control`
-sessions resumed from their transcript in a tmux session of their old name.
-Spawner sessions in a folder that has a spawner are left to it: it reclaims
-the newest one, and older ones come back with `sessel open`.
+sessions in a folder without a spawner as windows in the `rc` tmux session,
+reattached under their old id, and interactive `--remote-control` sessions
+resumed from their transcript in a tmux session of their old name.
+In a folder that has a spawner, the spawner reclaims its pointer's session and
+the others are resumed from their transcripts with `sessel open -d`.
 
 Tunables, as environment variables read by the entrypoint:
 
