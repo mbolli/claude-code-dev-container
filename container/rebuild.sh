@@ -20,6 +20,7 @@ docker rm   claude-code 2>/dev/null || true
 docker run -d \
   --name claude-code \
   --restart unless-stopped \
+  --memory=36g --memory-swap=36g \
   -p 2222:22 \
   -v /mnt/user/appdata/claude-code/home:/home/dev \
   -v /mnt/user/develop:/develop \
