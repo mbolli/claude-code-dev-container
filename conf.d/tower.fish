@@ -166,7 +166,7 @@ end
 # A session on the bare ssh pty dies when the notebook suspends and the pty
 # closes, and its subprocesses are left orphaned on PID 1.
 
-function sessel --description "Claude sessions on tower: browse, peek, resume, delete (sessel --help)"
+function sessel --description "Sessions on tower: browse, peek, resume, delete (sessel --help)"
     # sessel lives in the image (container/sessel) because the transcripts,
     # the registry and tmux are all on tower. -t for the TUI and for prompts.
     # $a, not an inline (…): concatenating with an empty command substitution
@@ -175,7 +175,7 @@ function sessel --description "Claude sessions on tower: browse, peek, resume, d
     ssh -t tower-dev "LANG=C.UTF-8 sessel $a"
 end
 
-function devls --description "List Claude sessions on tower; either id works for devresume (-a: all)"
+function devls --description "List sessions on tower; either id works for devresume (-a: all, -agent: filter)"
     set -l a (string escape -- $argv | string join ' ')
     __dev_ssh "sessel ls $a"
 end

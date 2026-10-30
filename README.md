@@ -259,12 +259,14 @@ explicitly, named after the repo or the session's title.
 
 ## sessel
 
-`sessel` (in `container/sessel`, Go, built into the image) knows every Claude
-session in the container by either of its two ids: the transcript uuid, which
+`sessel` (in `container/sessel`, Go, built into the image) manages Claude,
+Codex and Antigravity (`agy`) sessions in the container. For Claude it knows
+every session by either of its two ids: the transcript uuid, which
 `claude --resume` takes, and the Remote Control id (`session_01…`, also
 `cse_01…` or the end of a claude.ai/code URL), which the phone shows. The
 Remote Control id changes every time a session is re-bridged, so the id on the
-phone is often an older one; sessel resolves all of them.
+phone is often an older one; sessel resolves all of them. `claude` and `agy`
+sessions resumed or started in tmux run with `--remote-control` enabled.
 
 Run it with no arguments for the browser, from the laptop as `sessel` or
 `devresume`:
@@ -273,27 +275,35 @@ Run it with no arguments for the browser, from the laptop as `sessel` or
 
 | Key | |
 | --- | --- |
-| `↑` `↓` | move; the right pane shows the title, both ids, PR links, the opening prompt and where the session stopped |
+| `↑` `↓` | move; the right pane shows the title, agent, ids, PR links, the opening prompt and where the session stopped |
 | `enter` | resume it in its own tmux session, attach to it if it runs in tmux, or stop it and continue it in tmux if it runs outside or headless under a spawner (asks first) |
 | `/` | filter by title, repo or id |
+| `f` | cycle agent filter (`all`, `claude`, `codex`, `agy`) |
 | `space`, `d` | mark sessions, delete the marked ones or the current one |
 | `R` | rename, as `/rename` does; not for a running session, which writes its own title back |
-| `n` | new project: `/develop/<name>`, `git init`, served to the phone, first session opened |
+| `n` | new project: `/develop/<name>` (or `<agent>:<name>` such as `agy:my-repo`), `git init`, served to the phone for Claude, first session opened |
 | `s` | switch the right pane between the peek and stats: size on disk, prompts, turns, tool calls, tokens, models, when it started |
 | `tab` | scroll the right pane; a live session's peek follows its newest turns |
 | `a` | also show `/tmp` scratchpad sessions |
 | `r` | reload |
 | `q` | quit |
 
-The same things are subcommands: `sessel ls`, `open`, `peek`, `rename`, `rm`,
-`new`, `serve`, `upgrade`, `resolve`, `json`. `sessel --help` lists them.
+The same things are subcommands: `sessel ls` (`-agent claude|codex|agy`),
+`open`, `peek`, `rename`, `rm`, `new` (`-agent claude|codex|agy` or
+`<agent>:<name>`), `serve`, `upgrade`, `resolve`, `json`. `sessel --help`
+lists them.
 
-**Delete is real.** It removes the transcript, the session's subagent and tool
-result directory, its file history, uploads, session env, scratchpad, registry
-records and the per-process key files. A running session is stopped first.
-Your prompt history (`~/.claude/history.jsonl`) and the project's memory stay.
-The session's entries on claude.ai are out of reach and stay listed there.
-`sessel rm -n <id>` shows exactly what would go.
+**Delete is real.** For Claude it removes the transcript, the session's
+subagent and tool result directory, its file history, uploads, session env,
+scratchpad, registry records and the per-process key files while keeping your
+prompt history (`~/.claude/history.jsonl`) and the project's memory. For Codex
+it runs `codex delete --force` (or, if `codex` is not installed, removes the
+rollout JSONL, shell snapshot, thread writer lock,
+`tui-thread-reference-capabilities` entry and SQLite rows in `state_5.sqlite`
+with foreign-key cascades, `thread_history_1.sqlite` and `logs_2.sqlite`). For
+`agy` it removes the brain directory, conversation database, annotations,
+presence lock and summary row in `conversation_summaries.db`. A running session
+is stopped first. `sessel rm -n <id>` shows exactly what would go.
 
 A session is live only if its pid still belongs to the same process: pids
 start from 1 after every rebuild, so an existing pid is often someone else.
