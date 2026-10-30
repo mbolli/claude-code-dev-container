@@ -29,15 +29,24 @@ var (
 	cDim    = lipgloss.AdaptiveColor{Light: "#6b7280", Dark: "#8b8fa3"}
 	cWarn   = lipgloss.AdaptiveColor{Light: "#b91c1c", Dark: "#ff8a80"}
 	cLive   = lipgloss.AdaptiveColor{Light: "#15803d", Dark: "#7ee2a0"}
+	cBusy   = lipgloss.AdaptiveColor{Light: "#b45309", Dark: "#fcd34d"}
+	cRepo   = lipgloss.AdaptiveColor{Light: "#0369a1", Dark: "#7dd3fc"}
+	cCodex  = lipgloss.AdaptiveColor{Light: "#047857", Dark: "#6ee7b7"}
+	cAgy    = lipgloss.AdaptiveColor{Light: "#b45309", Dark: "#fbbf24"}
 	cSel    = lipgloss.AdaptiveColor{Light: "#ddd6fe", Dark: "#4a3d85"}
 
 	sHeading = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
+	sKey     = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
 	sLabel   = lipgloss.NewStyle().Foreground(cDim)
 	sDim     = lipgloss.NewStyle().Foreground(cDim)
 	sWho     = lipgloss.NewStyle().Bold(true)
 	sWarn    = lipgloss.NewStyle().Foreground(cWarn).Bold(true)
 	sLive    = lipgloss.NewStyle().Foreground(cLive)
-	sSelRow  = lipgloss.NewStyle().Background(cSel)
+	sBusy    = lipgloss.NewStyle().Foreground(cBusy).Bold(true)
+	sRepo    = lipgloss.NewStyle().Foreground(cRepo)
+	sCodex   = lipgloss.NewStyle().Foreground(cCodex)
+	sAgy     = lipgloss.NewStyle().Foreground(cAgy)
+	sPill    = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
 	sBorder  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(cDim)
 	sFocus   = sBorder.BorderForeground(cAccent)
 )
@@ -77,21 +86,24 @@ type model struct {
 	top         int
 	marked      map[string]bool
 	showScratch bool
+	liveOnly    bool
 	agentFilter string // "", "claude", "codex", "agy"
 
-	mode    mode
-	label   string // what the text input is for
-	input   textinput.Model
-	query   string
-	pending []*Session // targets of a confirm
-	summary string     // the confirm question, measured once
+	mode           mode
+	label          string // what the text input is for
+	input          textinput.Model
+	query          string
+	preFilterQuery string
+	pending        []*Session // targets of a confirm
+	summary        string     // the confirm question, measured once
 
 	peek      viewport.Model
 	peekFocus bool
 	peeks     map[string]peekMsg
 	peekFor   string
-	shownFor  string // the session the pane currently shows
+	shownFor  string // the session or view key the pane currently shows
 	showStats bool   // the right pane shows stats instead of the peek
+	showHelp  bool   // the right pane shows the keyboard shortcuts & legend
 	arts      map[string]artsMsg
 
 	note  string
@@ -147,21 +159,28 @@ func (m *model) current() *Session {
 	return nil
 }
 
+func (m *model) hasActiveFilters() bool {
+	return m.query != "" || m.agentFilter != "" || m.liveOnly || m.showScratch
+}
+
 func (m *model) refilter() {
 	keep := ""
 	if s := m.current(); s != nil {
 		keep = s.UUID
 	}
-	q := strings.ToLower(m.query)
+	q := strings.ToLower(strings.TrimSpace(m.query))
 	m.rows = m.rows[:0]
 	for _, s := range m.st.Sessions {
 		if m.agentFilter != "" && s.AgentName() != m.agentFilter {
 			continue
 		}
+		if m.liveOnly && s.State == Dead {
+			continue
+		}
 		if s.Scratch() && !m.showScratch {
 			continue
 		}
-		if q != "" && !strings.Contains(strings.ToLower(s.AgentName()+" "+s.Title+" "+s.Repo()+" "+s.UUID+" "+strings.Join(s.Bridges, " ")), q) {
+		if q != "" && !strings.Contains(strings.ToLower(s.AgentName()+" "+s.Title+" "+s.Repo()+" "+s.Branch+" "+s.UUID+" "+strings.Join(s.Bridges, " ")), q) {
 			continue
 		}
 		m.rows = append(m.rows, s)
@@ -180,8 +199,13 @@ func (m *model) refilter() {
 }
 
 func (m *model) loadPeek() tea.Cmd {
+	if m.showHelp {
+		m.setPeek()
+		return nil
+	}
 	s := m.current()
 	if s == nil {
+		m.setPeek()
 		return nil
 	}
 	m.peekFor = s.UUID
@@ -206,27 +230,49 @@ func (m *model) loadPeek() tea.Cmd {
 	}
 }
 
-// setPeek redraws the pane. A new session starts at the top, or at the bottom
-// if it is live, since that is where its newest turns are. A refresh of the
-// same session keeps your scroll position, and keeps following the bottom of a
-// live one if you were at the bottom.
+// setPeek redraws the scrollable body of the right pane. The session header
+// stays pinned above the viewport so scrolling never hides the session's title
+// or IDs. A live session's peek starts at the bottom and follows new turns
+// while at the bottom.
 func (m *model) setPeek() {
-	s := m.current()
-	if s == nil {
-		m.peek.SetContent(sDim.Render("no sessions"))
+	m.peek.Width = m.rightWidth()
+	m.peek.Height = m.viewportHeight(m.listHeight())
+	width := max(20, m.peek.Width-2)
+
+	if m.showHelp {
+		same := m.shownFor == "__help__"
+		offset := m.peek.YOffset
+		m.shownFor = "__help__"
+		m.peek.SetContent(renderHelpBody(width))
+		if !same {
+			m.peek.GotoTop()
+		} else {
+			m.peek.SetYOffset(offset)
+		}
 		return
 	}
-	same := m.shownFor == s.UUID
-	follow := s.State != Dead && (!same || m.peek.AtBottom())
+
+	s := m.current()
+	if s == nil {
+		m.shownFor = ""
+		m.peek.SetContent(sDim.Render("no sessions match the current filters"))
+		return
+	}
+	viewKey := s.UUID
+	if m.showStats {
+		viewKey += ":stats"
+	}
+	same := m.shownFor == viewKey
+	follow := !m.showStats && s.State != Dead && (!same || m.peek.AtBottom())
 	offset := m.peek.YOffset
-	m.shownFor = s.UUID
-	width := m.peek.Width - 2
+	m.shownFor = viewKey
+
 	if m.showStats {
 		var arts []Artifact
 		if a, ok := m.arts[s.UUID]; ok {
 			arts = a.arts
 		}
-		m.peek.SetContent(renderStats(s, arts, width, tuiStyle{}))
+		m.peek.SetContent(renderStatsBody(s, arts, width, tuiStyle{}))
 		if !same {
 			m.peek.GotoTop()
 		} else {
@@ -237,11 +283,11 @@ func (m *model) setPeek() {
 	p, ok := m.peeks[s.UUID]
 	switch {
 	case !ok:
-		m.peek.SetContent(renderPeek(s, nil, width, tuiStyle{}) + sDim.Render("\nreading…"))
+		m.peek.SetContent(renderPeekBody(s, nil, width, tuiStyle{}) + sDim.Render("\nreading…"))
 	case p.err != nil:
 		m.peek.SetContent(sWarn.Render(p.err.Error()))
 	default:
-		m.peek.SetContent(renderPeek(s, p.turns, width, tuiStyle{}))
+		m.peek.SetContent(renderPeekBody(s, p.turns, width, tuiStyle{}))
 	}
 	switch {
 	case follow:
@@ -264,7 +310,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.setPeek()
 		return m, nil
 	case tickMsg:
-		if m.mode == browse {
+		if m.mode == browse || m.mode == filtering {
 			return m, tea.Batch(reload(), tick())
 		}
 		return m, tick()
@@ -301,6 +347,23 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *model) openSelected() (tea.Model, tea.Cmd) {
+	s := m.current()
+	switch {
+	case s == nil:
+		return m, nil
+	case s.State == LiveOutside && s.PID == 0:
+		m.fail(Stop(s))
+		return m, nil
+	case s.State == LiveOutside:
+		m.pending, m.mode = []*Session{s}, confirmMove
+		return m, nil
+	default:
+		m.then = func() error { return Open(s) }
+		return m, tea.Quit
+	}
+}
+
 func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.mode {
 	case filtering, renaming, naming:
@@ -314,6 +377,20 @@ func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "tab", "esc", "left", "h":
 			m.peekFocus = false
 			return m, nil
+		case "?":
+			m.showHelp = !m.showHelp
+			m.setPeek()
+			return m, nil
+		case "s":
+			m.showHelp = false
+			m.showStats = !m.showStats
+			return m, m.loadPeek()
+		case "g", "home":
+			m.peek.GotoTop()
+			return m, nil
+		case "G", "end":
+			m.peek.GotoBottom()
+			return m, nil
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		}
@@ -324,10 +401,20 @@ func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	m.note = ""
 	switch k.String() {
-	case "q", "ctrl+c", "esc":
-		if k.String() == "esc" && m.query != "" {
-			m.query = ""
+	case "?", "f1":
+		m.showHelp = !m.showHelp
+		return m, m.loadPeek()
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		if m.showHelp {
+			m.showHelp = false
+			return m, m.loadPeek()
+		}
+		if m.query != "" || m.agentFilter != "" || m.liveOnly {
+			m.query, m.agentFilter, m.liveOnly = "", "", false
 			m.refilter()
+			m.say("filters cleared")
 			return m, m.loadPeek()
 		}
 		return m, tea.Quit
@@ -336,19 +423,37 @@ func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "down", "j":
 		return m.move(1)
 	case "pgup":
-		return m.move(-m.listHeight())
+		return m.move(-m.listRowsHeight())
 	case "pgdown":
-		return m.move(m.listHeight())
+		return m.move(m.listRowsHeight())
 	case "home", "g":
 		return m.move(-len(m.rows))
 	case "end", "G":
 		return m.move(len(m.rows))
-	case "tab", "right", "l":
+	case "J":
+		m.peek.LineDown(3)
+		return m, nil
+	case "K":
+		m.peek.LineUp(3)
+		return m, nil
+	case "ctrl+d":
+		m.peek.HalfViewDown()
+		return m, nil
+	case "ctrl+u":
+		m.peek.HalfViewUp()
+		return m, nil
+	case "tab", "right":
 		m.peekFocus = true
+		return m, nil
 	case "/":
+		m.preFilterQuery = m.query
 		m.startInput(filtering, m.query, "filter")
 	case "f":
 		m.agentFilter = nextAgentFilter(m.agentFilter)
+		m.refilter()
+		return m, m.loadPeek()
+	case "l":
+		m.liveOnly = !m.liveOnly
 		m.refilter()
 		return m, m.loadPeek()
 	case "a":
@@ -356,10 +461,11 @@ func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.refilter()
 		return m, m.loadPeek()
 	case "r":
+		m.say("reloaded")
 		return m, reload()
 	case "s":
+		m.showHelp = false
 		m.showStats = !m.showStats
-		m.shownFor = "" // a different view starts at its top
 		return m, m.loadPeek()
 	case " ":
 		if s := m.current(); s != nil {
@@ -391,17 +497,7 @@ func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.startInput(naming, "", prompt)
 	case "enter":
-		s := m.current()
-		switch {
-		case s == nil:
-		case s.State == LiveOutside && s.PID == 0:
-			m.fail(Stop(s))
-		case s.State == LiveOutside:
-			m.pending, m.mode = []*Session{s}, confirmMove
-		default:
-			m.then = func() error { return Open(s) }
-			return m, tea.Quit
-		}
+		return m.openSelected()
 	}
 	return m, nil
 }
@@ -423,10 +519,41 @@ func (m *model) startInput(md mode, value, prompt string) {
 }
 
 func (m *model) textKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.mode == filtering {
+		switch k.String() {
+		case "up", "ctrl+p":
+			return m.move(-1)
+		case "down", "ctrl+n":
+			return m.move(1)
+		case "pgup":
+			return m.move(-m.listRowsHeight())
+		case "pgdown":
+			return m.move(m.listRowsHeight())
+		case "ctrl+d":
+			m.peek.HalfViewDown()
+			return m, nil
+		case "ctrl+u":
+			m.peek.HalfViewUp()
+			return m, nil
+		case "tab":
+			m.query = strings.TrimSpace(m.input.Value())
+			m.mode = browse
+			m.input.Blur()
+			m.refilter()
+			return m, m.loadPeek()
+		}
+	}
+
 	switch k.String() {
 	case "esc":
+		wasFiltering := m.mode == filtering
 		m.mode = browse
 		m.input.Blur()
+		if wasFiltering {
+			m.query = ""
+			m.refilter()
+			return m, m.loadPeek()
+		}
 		return m, nil
 	case "enter":
 		v := strings.TrimSpace(m.input.Value())
@@ -437,6 +564,9 @@ func (m *model) textKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case filtering:
 			m.query = v
 			m.refilter()
+			if m.current() != nil {
+				return m.openSelected()
+			}
 			return m, m.loadPeek()
 		case renaming:
 			s := m.current()
@@ -573,19 +703,44 @@ func clamp(s string, w, h int) string {
 	return strings.Join(lines, "\n")
 }
 
-func (m *model) listWidth() int  { return max(40, m.w*2/5) }
-func (m *model) listHeight() int { return max(1, m.h-3) }
+func (m *model) listWidth() int      { return max(44, m.w*9/20) }
+func (m *model) rightWidth() int     { return max(24, m.w-m.listWidth()-4) }
+func (m *model) listHeight() int     { return max(1, m.h-3) }
+func (m *model) listRowsHeight() int { return max(1, m.listHeight()-2) }
+
+func (m *model) pinnedHeaderLines() int {
+	if m.showHelp {
+		return 2
+	}
+	s := m.current()
+	if s == nil {
+		return 0
+	}
+	lines := 4 // title, metadata, uuid, divider bar
+	if s.Bridge() != "" {
+		lines++
+	}
+	lines += min(3, len(s.PRs))
+	return lines
+}
+
+func (m *model) viewportHeight(boxH int) int {
+	hdr := m.pinnedHeaderLines()
+	if boxH-hdr < 4 {
+		return max(1, boxH)
+	}
+	return max(1, boxH-hdr)
+}
 
 func (m *model) layout() {
-	m.peek.Width = max(20, m.w-m.listWidth()-4)
-	m.peek.Height = max(1, m.h-3)
+	m.peek.Width = m.rightWidth()
+	m.peek.Height = m.viewportHeight(m.listHeight())
 }
 
 func (m *model) View() string {
 	if m.w == 0 {
 		return ""
 	}
-	list := m.viewList()
 	pane := sBorder
 	if m.peekFocus {
 		pane = sFocus
@@ -593,39 +748,182 @@ func (m *model) View() string {
 	// Clamp before boxing: lipgloss wraps a line wider than its box and treats
 	// Height as a minimum, so one long peek line would push the footer, where
 	// every prompt and confirm lives, off the screen.
-	// A confirm may wrap to three lines; the boxes give up the room.
 	footer := ansi.Wrap(m.viewFooter(), m.w, " ")
 	fh := min(3, strings.Count(footer, "\n")+1)
+	boxH := max(1, m.listHeight()-fh+1)
+	list := m.viewList(boxH)
+	right := m.viewRight(boxH)
 	body := lipgloss.JoinHorizontal(lipgloss.Top,
-		sBorder.Render(clamp(list, m.listWidth(), max(1, m.listHeight()-fh+1))),
-		pane.Render(clamp(m.peek.View(), m.peek.Width, max(1, m.peek.Height-fh+1))))
+		sBorder.Render(clamp(list, m.listWidth(), boxH)),
+		pane.Render(clamp(right, m.rightWidth(), boxH)))
 	return lipgloss.JoinVertical(lipgloss.Left, body, clamp(footer, m.w, fh))
 }
 
-func (m *model) viewList() string {
-	h := m.listHeight()
+func (m *model) viewRight(boxH int) string {
+	width := m.rightWidth()
+	if m.showHelp {
+		title := sHeading.Render("Keyboard Shortcuts & Status Legend")
+		hint := sDim.Render("? or esc to close")
+		gap := max(1, width-ansi.StringWidth(title)-ansi.StringWidth(hint))
+		top := title + strings.Repeat(" ", gap) + hint
+		div := m.viewRightDivider("help", width)
+		m.peek.Height = max(1, boxH-2)
+		return top + "\n" + div + "\n" + m.peek.View()
+	}
+	s := m.current()
+	if s == nil {
+		return m.peek.View()
+	}
+	hdr := renderHeader(s, width-2, tuiStyle{})
+	modeLabel := "peek"
+	if m.showStats {
+		modeLabel = "stats"
+	}
+	div := m.viewRightDivider(modeLabel, width)
+	hdrLines := strings.Count(hdr, "\n") + 2
+	if boxH-hdrLines < 4 {
+		m.peek.Height = max(1, boxH)
+		return m.peek.View()
+	}
+	m.peek.Height = max(1, boxH-hdrLines)
+	return hdr + "\n" + div + "\n" + m.peek.View()
+}
+
+func (m *model) viewRightDivider(modeLabel string, width int) string {
+	left := sDim.Render("── ") + sPill.Render(modeLabel) + sDim.Render(" ")
+	var rightParts []string
+	switch {
+	case m.showHelp:
+		rightParts = append(rightParts, "J/K or ctrl+d/u scroll")
+	case m.peekFocus:
+		rightParts = append(rightParts, "↑↓ pgup/pgdn scroll · tab back")
+	case m.showStats:
+		rightParts = append(rightParts, "s peek · ? help")
+	default:
+		rightParts = append(rightParts, "s stats · J/K scroll · ? help")
+	}
+	if m.peek.TotalLineCount() > m.peek.Height {
+		switch {
+		case m.peek.AtTop():
+			rightParts = append(rightParts, "top ↓")
+		case m.peek.AtBottom():
+			rightParts = append(rightParts, "↑ bot")
+		default:
+			rightParts = append(rightParts, fmt.Sprintf("↕ %d%%", int(m.peek.ScrollPercent()*100)))
+		}
+	}
+	right := sDim.Render(" " + strings.Join(rightParts, " · ") + " ──")
+	fill := max(1, width-ansi.StringWidth(left)-ansi.StringWidth(right))
+	return left + sDim.Render(strings.Repeat("─", fill)) + right
+}
+
+func shortAgentBadge(agent string) string {
+	switch agent {
+	case AgentCodex:
+		return "cdx"
+	case AgentAgy:
+		return "agy"
+	default:
+		return "cla"
+	}
+}
+
+func (m *model) viewListHeader(width int, repoW int) (string, string) {
+	total := len(m.st.Sessions)
+	shown := len(m.rows)
+	countStr := fmt.Sprintf(" %d sessions", shown)
+	if shown != total {
+		countStr = fmt.Sprintf(" %d/%d sessions", shown, total)
+	}
+	left := sHeading.Render(countStr)
+
+	var pills []string
+	if m.agentFilter != "" {
+		pills = append(pills, sPill.Render("agent:"+m.agentFilter))
+	}
+	if m.liveOnly {
+		pills = append(pills, sLive.Render("● live"))
+	}
+	if m.showScratch {
+		pills = append(pills, sPill.Render("+tmp"))
+	}
+	if m.query != "" {
+		pills = append(pills, sPill.Render("/"+oneLine(m.query, 14)))
+	}
+	if len(m.marked) > 0 {
+		pills = append(pills, sWarn.Render(fmt.Sprintf("%d marked", len(m.marked))))
+	}
+	right := ""
+	if len(pills) > 0 {
+		right = strings.Join(pills, sDim.Render(" · ")) + " "
+	} else {
+		liveCount := 0
+		for _, s := range m.rows {
+			if s.State != Dead {
+				liveCount++
+			}
+		}
+		if liveCount > 0 {
+			right = sLive.Render(fmt.Sprintf("%d live", liveCount)) + " "
+		}
+	}
+	gap := max(1, width-ansi.StringWidth(left)-ansi.StringWidth(right))
+	line1 := left + strings.Repeat(" ", gap) + right
+
+	cols := fmt.Sprintf("   %-4s %-3s %-*s %s", "AGE", "AG", repoW, "REPO", "TITLE")
+	line2 := sDim.Render(ansi.Truncate(cols, width, ""))
+	return line1, line2
+}
+
+func (m *model) viewList(boxH int) string {
+	width := m.listWidth()
+	repoW := min(18, max(12, width/4))
+	titleW := max(10, width-repoW-13)
+
+	var b strings.Builder
+	rowsH := boxH
+	if boxH >= 4 {
+		h1, h2 := m.viewListHeader(width, repoW)
+		b.WriteString(h1)
+		b.WriteByte('\n')
+		b.WriteString(h2)
+		b.WriteByte('\n')
+		rowsH = boxH - 2
+	}
+
 	if m.cursor < m.top {
 		m.top = m.cursor
 	}
-	if m.cursor >= m.top+h {
-		m.top = m.cursor - h + 1
+	if m.cursor >= m.top+rowsH {
+		m.top = m.cursor - rowsH + 1
 	}
-	width := m.listWidth()
-	repoW := 16
-	titleW := max(8, width-repoW-20)
-	var b strings.Builder
-	for i := m.top; i < min(len(m.rows), m.top+h); i++ {
+
+	if len(m.rows) == 0 {
+		msg := " no sessions match"
+		if m.hasActiveFilters() {
+			msg += " (press esc to clear filters)"
+		}
+		b.WriteString(sDim.Render(msg))
+		return b.String()
+	}
+
+	end := min(len(m.rows), m.top+rowsH)
+	for i := m.top; i < end; i++ {
 		s := m.rows[i]
 		sel := i == m.cursor
 		// Every segment of the selected row carries the background itself: the
 		// reset ending a coloured segment would otherwise end the highlight too.
 		bg := func(st lipgloss.Style) lipgloss.Style {
 			if sel {
-				return st.Background(cSel).Bold(true)
+				return st.Background(cSel)
 			}
 			return st
 		}
 		plain := bg(lipgloss.NewStyle())
+		titleSt := plain
+		if sel {
+			titleSt = titleSt.Bold(true)
+		}
 		cur := plain.Render(" ")
 		if sel {
 			cur = bg(sHeading).Render("›")
@@ -634,30 +932,56 @@ func (m *model) viewList() string {
 		if m.marked[s.UUID] {
 			mark = bg(sWarn).Render("✗")
 		}
-		state := plain.Render(marker(s.State))
-		if s.State != Dead {
-			state = bg(sLive).Render(marker(s.State))
+		mk := marker(s)
+		state := plain.Render(mk)
+		switch {
+		case s.Busy:
+			state = bg(sBusy).Render(mk)
+		case s.State == LiveTmux || (s.State == LiveOutside && s.Spawner == ""):
+			state = bg(sLive).Render(mk)
+		case s.State == LiveOutside:
+			state = bg(sDim).Render(mk)
 		}
-		text := fmt.Sprintf(" %-4s %-6s %-*s %s", age(s.Mtime), s.AgentName(), repoW, oneLine(s.Repo(), repoW), oneLine(s.Title, titleW))
-		line := ansi.Truncate(cur+mark+state+plain.Render(text), width, "…")
+
+		ageSeg := bg(sDim).Render(fmt.Sprintf(" %-4s ", age(s.Mtime)))
+		ag := shortAgentBadge(s.AgentName())
+		agStyle := sDim
+		switch s.AgentName() {
+		case AgentCodex:
+			agStyle = sCodex
+		case AgentAgy:
+			agStyle = sAgy
+		}
+		agSeg := bg(agStyle).Render(fmt.Sprintf("%-3s ", ag))
+		repoSeg := bg(sRepo).Render(fmt.Sprintf("%-*s ", repoW, oneLine(s.Repo(), repoW)))
+		titleSeg := titleSt.Render(oneLine(s.Title, titleW))
+
+		line := ansi.Truncate(cur+mark+state+ageSeg+agSeg+repoSeg+titleSeg, width, "…")
 		if pad := width - ansi.StringWidth(line); pad > 0 {
 			line += plain.Render(strings.Repeat(" ", pad))
 		}
 		b.WriteString(line)
-		if i < min(len(m.rows), m.top+h)-1 {
+		if i < end-1 {
 			b.WriteByte('\n')
 		}
-	}
-	if len(m.rows) == 0 {
-		b.WriteString(sDim.Render("no sessions match"))
 	}
 	return b.String()
 }
 
 func (m *model) viewFooter() string {
 	switch m.mode {
-	case filtering, renaming, naming:
-		return " " + sHeading.Render(m.label+": ") + m.input.View() + sDim.Render("   enter ok · esc cancel")
+	case filtering:
+		return " " + sHeading.Render("filter: ") + m.input.View() +
+			sDim.Render("   ") +
+			sKey.Render("↑↓") + sDim.Render(" select · ") +
+			sKey.Render("enter") + sDim.Render(" open · ") +
+			sKey.Render("tab") + sDim.Render(" keep filter · ") +
+			sKey.Render("esc") + sDim.Render(" clear")
+	case renaming, naming:
+		return " " + sHeading.Render(m.label+": ") + m.input.View() +
+			sDim.Render("   ") +
+			sKey.Render("enter") + sDim.Render(" confirm · ") +
+			sKey.Render("esc") + sDim.Render(" cancel")
 	case confirmMove:
 		return " " + sWarn.Render(MoveQuestion(m.pending[0], 40)+" y/N")
 	case confirmDelete:
@@ -669,25 +993,117 @@ func (m *model) viewFooter() string {
 		}
 		return " " + sLive.Render(m.note)
 	}
+
+	pair := func(k, desc string) string {
+		return sKey.Render(k) + sDim.Render(" "+desc)
+	}
+	sep := sDim.Render(" · ")
+
+	if m.peekFocus {
+		return " " + strings.Join([]string{
+			pair("↑↓/jk", "scroll"),
+			pair("pgup/pgdn", "page"),
+			pair("g/G", "top/bottom"),
+			pair("s", "peek/stats"),
+			pair("tab/esc", "back to list"),
+			pair("?", "help"),
+			pair("q", "quit"),
+		}, sep)
+	}
+	if m.showHelp {
+		return " " + strings.Join([]string{
+			pair("J/K", "scroll help"),
+			pair("ctrl+d/u", "half-page"),
+			pair("↑↓", "select session"),
+			pair("?/esc", "close help"),
+			pair("q", "quit"),
+		}, sep)
+	}
+
 	view := "stats"
 	if m.showStats {
 		view = "peek"
 	}
-	help := "↑↓ move · enter open · s " + view + " · tab scroll · / filter · f agent · space mark · d delete · R rename · n new · a scratch · q quit"
-	if m.peekFocus {
-		help = "↑↓ pgup pgdn scroll · tab back · q quit"
+	items := []string{
+		pair("↑↓", "move"),
+		pair("enter", "open"),
+		pair("/", "search"),
+		pair("f", "agent"),
+		pair("l", "live"),
+		pair("s", view),
+		pair("J/K", "scroll peek"),
+		pair("space", "mark"),
+		pair("d", "delete"),
+		pair("R", "rename"),
+		pair("n", "new"),
+		pair("a", "tmp"),
 	}
-	info := fmt.Sprintf(" %d sessions", len(m.rows))
-	if m.agentFilter != "" {
-		info = fmt.Sprintf(" %d %s sessions", len(m.rows), m.agentFilter)
+	if m.hasActiveFilters() {
+		items = append(items, pair("esc", "clear filters"))
 	}
-	if len(m.marked) > 0 {
-		info += fmt.Sprintf(", %d marked", len(m.marked))
+	items = append(items, pair("?", "help"), pair("q", "quit"))
+	return " " + strings.Join(items, sep)
+}
+
+func renderHelpBody(width int) string {
+	var b strings.Builder
+	sec := func(title string) {
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(sHeading.Render("── " + title + " ──"))
+		b.WriteByte('\n')
 	}
-	if m.query != "" {
-		info += fmt.Sprintf(", filter %q", m.query)
+	row := func(keys, desc string) {
+		kCol := fmt.Sprintf("  %-16s", keys)
+		wrapped := wrap(desc, max(24, width-20), 8)
+		lines := strings.Split(wrapped, "\n")
+		b.WriteString(sKey.Render(kCol) + " " + lines[0] + "\n")
+		for _, l := range lines[1:] {
+			b.WriteString(strings.Repeat(" ", 19) + l + "\n")
+		}
 	}
-	return sDim.Render(info + " · " + help)
+
+	sec("Navigation & Opening Sessions")
+	row("↑ / ↓, k / j", "Move up or down in the session list. The right pane updates immediately with the selected session's peek or stats.")
+	row("pgup / pgdn", "Move up or down by one full page of sessions.")
+	row("g / G, home/end", "Jump to the newest session at the top (g) or the oldest session at the bottom (G).")
+	row("enter", "Open the selected session in tmux:")
+	row("  stopped ( )", "Resumes the conversation in its own tmux session (<repo>-<uuid8>, <repo>@codex-<uuid8>, or <repo>@agy-<uuid8>) with --remote-control enabled for Claude and agy, then attaches your terminal.")
+	row("  in tmux (●/◉)", "Attaches or switches your tmux client directly to the window and pane where the session is already running.")
+	row("  outside (◦/◐)", "Asks y/N first, then stops the headless spawner or external process and resumes the same transcript in interactive tmux (the mobile app keeps the session under a new bridge link).")
+
+	sec("Right Pane: Peek, Stats & Scrolling")
+	row("s", "Switch the right pane between Conversation Peek (opening prompt + latest turns and collapsed tool runs) and Session Stats (disk size across all folders, prompts, turns, tool calls, runtime span, token usage, cache hits, models, bridge IDs, and PR links).")
+	row("J / K (shift)", "Scroll the right pane down (J) or up (K) by 3 lines while keeping focus in the session list.")
+	row("ctrl+d / ctrl+u", "Scroll the right pane down or up by half a page without leaving the session list.")
+	row("tab, →", "Focus the right pane for full keyboard scrolling (↑/↓, j/k, pgup/pgdn, g/G). Press tab, ←, h, or esc to return to the list.")
+
+	sec("Searching & Filtering")
+	row("/", "Live search across title, repo, git branch, agent, transcript UUID, and phone session_01… / cse_01… bridge IDs. While typing: ↑/↓ moves the cursor, enter opens the selected session immediately, tab keeps the filter active for batch actions, and esc clears it.")
+	row("f", "Cycle agent filter: all -> claude (cla) -> codex (cdx) -> agy (agy) -> all.")
+	row("l", "Toggle live-only filter (show only currently running sessions).")
+	row("a", "Toggle /tmp scratchpad and subagent probe sessions (hidden by default).")
+	row("esc", "Close this help view, or clear any active /, f, or l filters. Press esc again with no active filters (or press q) to quit.")
+
+	sec("Managing Sessions & Projects")
+	row("space", "Mark or unmark the selected session (✗) for batch deletion and advance to the next row.")
+	row("d", "Delete all marked sessions, or the selected session if none are marked. Shows total file count and disk footprint before asking y/N. Stops running sessions first and removes local transcripts, subagent outputs, file history, caches, locks, and SQLite rows (keeping ~/.claude/history.jsonl and project memories).")
+	row("R", "Rename a stopped session (updates the Claude transcript, Codex SQLite/index, or agy summary DB). Running sessions must be renamed from inside the session so the running process does not overwrite the title.")
+	row("n", "Create a new project in /develop/<name>, run git init, and start its first session in tmux (for Claude, also launches a phone Remote Control spawner). Prefix with <agent>:<name> (e.g. codex:my-tool or agy:my-app) to pick the agent.")
+	row("r", "Rescan transcripts and refresh live process and tmux state immediately (also refreshes automatically every 2 seconds).")
+	row("?, F1", "Toggle this keyboard shortcuts and status legend view.")
+	row("q, ctrl+c", "Quit sessel.")
+
+	sec("Row Markers & Badges Legend")
+	b.WriteString("  " + sBusy.Render("◉") + "  " + sWho.Render("Busy (mid-reply)") + "   " + sDim.Render("Actively generating a response or running a tool right now.") + "\n")
+	b.WriteString("  " + sLive.Render("●") + "  " + sWho.Render("Live in tmux") + "       " + sDim.Render("Interactive session in a tmux pane; enter attaches directly.") + "\n")
+	b.WriteString("  " + sDim.Render("◦") + "  " + sWho.Render("Idle in spawner") + "    " + sDim.Render("Headless session held by a Claude Remote Control spawner for the phone.") + "\n")
+	b.WriteString("  " + sLive.Render("◐") + "  " + sWho.Render("Live outside tmux") + "  " + sDim.Render("Running in another terminal or IDE; enter offers to move it into tmux.") + "\n")
+	b.WriteString("  " + sWarn.Render("✗") + "  " + sWho.Render("Marked for delete") + "  " + sDim.Render("Toggled with space; press d to delete all marked sessions at once.") + "\n")
+	b.WriteString("  " + sDim.Render("cla") + " / " + sCodex.Render("cdx") + " / " + sAgy.Render("agy") + "       " + sDim.Render("Agent badge: Claude Code, OpenAI Codex, or Google Antigravity.") + "\n")
+
+	return b.String()
 }
 
 func nextAgentFilter(cur string) string {

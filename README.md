@@ -1,8 +1,8 @@
 # claude-code-dev-container
 
-A self-hosted development container that runs [Claude Code](https://claude.ai/code)
-alongside a full PHP / Go / Node / Python toolchain, reachable over SSH from
-VS Code Remote-SSH and from the Claude mobile app.
+A self-hosted development container that runs [Claude Code](https://claude.ai/code),
+Codex and Antigravity (`agy`) alongside a full PHP / Go / Node / Python
+toolchain, reachable over SSH from VS Code Remote-SSH and from the mobile app.
 
 It runs on an Unraid box, but nothing here is Unraid-specific beyond the
 `nobody:users` (99:100) uid convention and the share paths.
@@ -209,7 +209,7 @@ subdirectories).
 | `devlink` | Print the claude.ai/code environment URL, with QR and clipboard |
 | `sessel [cmd]` | Browse, peek, resume and delete sessions (see below) |
 | `devwork <repo>` | Start or reattach a session for a repo, under tmux |
-| `devls` | List sessions with titles; either id in it works for `devresume` |
+| `devls [-a] [-agent ...]` | List sessions with titles; either id in it works for `devresume` |
 | `devstatus` | Container status and Remote Control state |
 | `devrc` | Attach to the Remote Control tmux session |
 | `devresume [id]` | Resume by uuid, `session_` id or claude.ai URL; the sessel TUI with none |
@@ -273,20 +273,24 @@ Run it with no arguments for the browser, from the laptop as `sessel` or
 
 ![sessel: sessions on the left, the selected one's ids, opening prompt and last turns on the right](docs/sessel.png)
 
-| Key | |
+| Key | Does |
 | --- | --- |
-| `↑` `↓` | move; the right pane shows the title, agent, ids, PR links, the opening prompt and where the session stopped |
-| `enter` | resume it in its own tmux session, attach to it if it runs in tmux, or stop it and continue it in tmux if it runs outside or headless under a spawner (asks first) |
-| `/` | filter by title, repo or id |
-| `f` | cycle agent filter (`all`, `claude`, `codex`, `agy`) |
-| `space`, `d` | mark sessions, delete the marked ones or the current one |
-| `R` | rename, as `/rename` does; not for a running session, which writes its own title back |
-| `n` | new project: `/develop/<name>` (or `<agent>:<name>` such as `agy:my-repo`), `git init`, served to the phone for Claude, first session opened |
-| `s` | switch the right pane between the peek and stats: size on disk, prompts, turns, tool calls, tokens, models, when it started |
-| `tab` | scroll the right pane; a live session's peek follows its newest turns |
-| `a` | also show `/tmp` scratchpad sessions |
-| `r` | reload |
-| `q` | quit |
+| `↑` `↓`, `k` `j`, `pgup` `pgdn`, `g` `G` | Move through the session list (`g`/`G` jump to newest/oldest). The right pane pins the session's title, agent, repo, branch, state, UUID, phone ID and PR links at the top, and shows the opening prompt and latest turns below |
+| `enter` | Open the selected session: resumes a stopped session in its own `tmux` session (`<repo>-<uuid8>`, `<repo>@codex-<uuid8>` or `<repo>@agy-<uuid8>`), attaches directly if it already runs in `tmux` (`●`/`◉`), or asks `y/N` before stopping a headless spawner (`◦`) or outside-tmux (`◐`) process and continuing its transcript in `tmux` |
+| `/` | Live filter by title, repo, branch, agent, UUID or phone `session_01…` / `cse_01…` ID. While typing: `↑`/`↓` moves selection, `enter` opens the selected session immediately, `tab` keeps the filter active for batch actions, and `esc` clears it |
+| `f` | Cycle agent filter (`all` -> `claude` -> `codex` -> `agy` -> `all`) |
+| `l` | Toggle live-only filter (show only running sessions) |
+| `a` | Toggle `/tmp` scratchpad and subagent probe sessions (hidden by default) |
+| `esc` | Close help, or clear any active `/`, `f`, or `l` filters (press `esc` again with no filters, or `q`, to quit) |
+| `s` | Switch the right pane between the conversation peek and session stats (disk footprint across all folders, prompts, turns, tool calls, runtime span, token usage, cache hits, models, bridge IDs, PR links) |
+| `J` `K`, `ctrl+d` `ctrl+u` | Scroll the right pane by 3 lines (`J`/`K`) or half a page (`ctrl+d`/`ctrl+u`) without leaving the session list |
+| `tab`, `→` | Focus the right pane for full keyboard scrolling (`tab`, `←`, `h` or `esc` returns to the list). A live session's peek starts at the bottom and follows new turns automatically |
+| `space`, `d` | Mark/unmark sessions (`✗`) and advance (`space`); delete all marked sessions or the current one after a `y/N` confirmation showing total file count and byte size (`d`) |
+| `R` | Rename a stopped session (updates the Claude transcript, Codex SQLite/index, or `agy` summary DB). Running sessions must be renamed from inside the session so the running process does not write its old title back |
+| `n` | New project: creates `/develop/<name>` (or `<agent>:<name>` such as `codex:my-tool` or `agy:my-repo`), runs `git init`, starts a phone spawner for Claude, and opens the first session in `tmux` |
+| `r` | Reload transcripts and live state immediately (also refreshes every 2 seconds) |
+| `?`, `F1` | Toggle the in-app keyboard shortcuts guide and status marker legend (`◉` busy mid-reply, `●` live in tmux, `◦` idle in background spawner, `◐` live outside tmux, `✗` marked) |
+| `q`, `ctrl+c` | Quit |
 
 The same things are subcommands: `sessel ls` (`-agent claude|codex|agy`),
 `open`, `peek`, `rename`, `rm`, `new` (`-agent claude|codex|agy` or

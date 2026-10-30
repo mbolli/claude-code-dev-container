@@ -109,16 +109,25 @@ func cmdLs(args []string) error {
 			rc = fmt.Sprintf("%s (+%d older)", rc, len(s.Bridges)-1)
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			marker(s.State), age(s.Mtime), s.AgentName(), oneLine(s.Repo(), 28), oneLine(s.Title, 48), s.UUID, rc)
+			marker(s), age(s.Mtime), s.AgentName(), oneLine(s.Repo(), 28), oneLine(s.Title, 48), s.UUID, rc)
 	}
 	return w.Flush()
 }
 
-func marker(s State) string {
-	switch s {
+func marker(s *Session) string {
+	if s.State == Dead {
+		return " "
+	}
+	if s.Busy {
+		return "◉"
+	}
+	switch s.State {
 	case LiveTmux:
 		return "●"
 	case LiveOutside:
+		if s.Spawner != "" {
+			return "◦"
+		}
 		return "◐"
 	}
 	return " "

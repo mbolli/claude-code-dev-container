@@ -247,7 +247,6 @@ func (st *Store) session(path string, fi os.FileInfo, m meta) *Session {
 		Cwd: m.Cwd, Branch: m.Branch, FirstPrompt: m.FirstPrompt,
 		Mtime: fi.ModTime(), Lines: m.Lines, PRs: m.PRs, Stats: m.Stats,
 	}
-	s.Title, s.TitleSource = title(m)
 
 	recs := st.registry[uuid]
 	// cwd: the transcript, else the registry, else the project dir name. A
@@ -263,6 +262,7 @@ func (st *Store) session(path string, fi os.FileInfo, m meta) *Session {
 	if s.Cwd == "" {
 		s.Cwd = decodeProject(s.Project)
 	}
+	s.Title, s.TitleSource = title(m, s.Cwd)
 
 	for _, r := range recs {
 		s.Bridges = appendUnique(s.Bridges, normBridge(r.Bridge))
@@ -293,19 +293,24 @@ func (st *Store) session(path string, fi os.FileInfo, m meta) *Session {
 }
 
 // title prefers your own rename, then Claude's summary. A session launched
-// with a name gets a custom-title equal to its agent-name; that is the launch
-// name, usually just the repo, and loses to the ai-title.
-func title(m meta) (string, string) {
+// with a name gets a custom-title equal to its agent-name; when that name is
+// just the repo folder name, it loses to the ai-title and the first prompt.
+func title(m meta, cwd string) (string, string) {
 	userRename := m.CustomTitle != "" && m.CustomTitle != m.AgentName
+	folderName := m.CustomTitle != "" && cwd != "" && strings.EqualFold(m.CustomTitle, filepath.Base(cwd))
 	switch {
 	case userRename:
 		return m.CustomTitle, "custom"
 	case m.AITitle != "":
 		return m.AITitle, "ai"
-	case m.CustomTitle != "":
+	case m.CustomTitle != "" && !folderName:
 		return m.CustomTitle, "name"
 	case m.FirstPrompt != "":
 		return oneLine(m.FirstPrompt, 80), "prompt"
+	case m.CustomTitle != "":
+		return m.CustomTitle, "name"
+	case m.Lines == 0 && m.Stats.Prompts == 0:
+		return "(empty session)", "none"
 	}
 	return "(untitled)", "none"
 }
@@ -397,7 +402,7 @@ func procStartOf(pid int) string {
 
 // ---- scanning, with an offset cache --------------------------------------
 
-const cacheVersion = 4
+const cacheVersion = 5
 
 type cacheEntry struct {
 	Size    int64
@@ -726,7 +731,9 @@ func contentText(content json.RawMessage) string {
 		}
 	}
 	text = strings.TrimSpace(text)
-	if strings.HasPrefix(text, "<") { // <command-name>, <local-command-stdout>, …
+	if strings.HasPrefix(text, "<") || // <command-name>, <local-command-stdout>, …
+		strings.HasPrefix(text, "This session is being continued from a previous conversation") ||
+		strings.HasPrefix(text, "Another Claude session sent a message:") {
 		return ""
 	}
 	return text

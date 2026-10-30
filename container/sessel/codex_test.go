@@ -341,3 +341,50 @@ func TestIsCodexSubcommand(t *testing.T) {
 		}
 	}
 }
+
+func TestTitleCompactionAndToolCollapse(t *testing.T) {
+	// Compaction preamble and inter-session message are skipped by contentText.
+	if got := contentText([]byte(`"This session is being continued from a previous conversation that ran out of context."`)); got != "" {
+		t.Errorf("compaction preamble got %q, want empty", got)
+	}
+	if got := contentText([]byte(`"Another Claude session sent a message:\n<agent-message>"`)); got != "" {
+		t.Errorf("inter-session message got %q, want empty", got)
+	}
+	if got := contentText([]byte(`"Release php-via 0.14 now"`)); got != "Release php-via 0.14 now" {
+		t.Errorf("normal prompt got %q", got)
+	}
+
+	// Folder launch name ("tickit" in /develop/tickit) loses to FirstPrompt,
+	// whereas a custom name ("LITH" in /develop/starbase) wins over FirstPrompt.
+	gotTitle, gotSrc := title(meta{CustomTitle: "tickit", AgentName: "tickit", FirstPrompt: "read docs/requirements.md"}, "/develop/tickit")
+	if gotTitle != "read docs/requirements.md" || gotSrc != "prompt" {
+		t.Errorf("folder launch name title = %q (%s), want first prompt", gotTitle, gotSrc)
+	}
+	gotTitle, gotSrc = title(meta{CustomTitle: "LITH", AgentName: "LITH", FirstPrompt: "There are now quite a few golang projects"}, "/develop/starbase")
+	if gotTitle != "LITH" || gotSrc != "name" {
+		t.Errorf("custom resumed name title = %q (%s), want LITH (name)", gotTitle, gotSrc)
+	}
+	gotTitle, gotSrc = title(meta{}, "/develop/empty")
+	if gotTitle != "(empty session)" || gotSrc != "none" {
+		t.Errorf("empty transcript title = %q (%s), want (empty session)", gotTitle, gotSrc)
+	}
+
+	// Consecutive tool runs > 4 collapse to a summary line + last 3 calls.
+	turns := []Turn{
+		{Who: "you", Text: "check the files"},
+		{Who: "tool", Text: "Read(a)"},
+		{Who: "tool", Text: "Read(b)"},
+		{Who: "tool", Text: "Read(c)"},
+		{Who: "tool", Text: "Read(d)"},
+		{Who: "tool", Text: "Read(e)"},
+		{Who: "tool", Text: "Read(f)"},
+		{Who: "claude", Text: "done"},
+	}
+	collapsed := collapseTools(turns, 3)
+	if len(collapsed) != 6 {
+		t.Fatalf("len(collapsed) = %d, want 6: %+v", len(collapsed), collapsed)
+	}
+	if collapsed[1].Text != "… 3 earlier tool calls" || collapsed[4].Text != "Read(f)" {
+		t.Errorf("collapsed = %+v", collapsed)
+	}
+}

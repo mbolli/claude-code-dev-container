@@ -87,11 +87,12 @@ func lastTurnsWith(path string, n int, parseFn func([]byte) []Turn) ([]Turn, err
 			return nil, err
 		}
 	}
+	rawCap := max(n*6, 80)
 	var ring []Turn
 	push := func(t Turn) {
 		ring = append(ring, t)
-		if len(ring) > n {
-			ring = ring[len(ring)-n:]
+		if len(ring) > rawCap {
+			ring = ring[len(ring)-rawCap:]
 		}
 	}
 	r := bufio.NewReaderSize(f, chunk)
@@ -109,9 +110,41 @@ func lastTurnsWith(path string, n int, parseFn func([]byte) []Turn) ([]Turn, err
 			}
 		}
 		if err != nil {
-			return ring, nil
+			out := collapseTools(ring, 3)
+			if len(out) > n {
+				out = out[len(out)-n:]
+			}
+			return out, nil
 		}
 	}
+}
+
+// collapseTools folds runs of more than maxRun+1 consecutive tool calls into a
+// count line plus the last maxRun calls, so a long tool burst does not push the
+// surrounding conversation out of the peek window.
+func collapseTools(turns []Turn, maxRun int) []Turn {
+	var out []Turn
+	for i := 0; i < len(turns); {
+		if turns[i].Who != "tool" {
+			out = append(out, turns[i])
+			i++
+			continue
+		}
+		j := i
+		for j < len(turns) && turns[j].Who == "tool" {
+			j++
+		}
+		run := turns[i:j]
+		if len(run) > maxRun+1 {
+			hidden := len(run) - maxRun
+			out = append(out, Turn{Who: "tool", Text: fmt.Sprintf("… %d earlier tool calls", hidden)})
+			out = append(out, run[hidden:]...)
+		} else {
+			out = append(out, run...)
+		}
+		i = j
+	}
+	return out
 }
 
 func turnsOf(line []byte) []Turn {
@@ -191,11 +224,11 @@ func (plainStyle) Label(s string) string   { return s }
 func (plainStyle) Dim(s string) string     { return s }
 func (plainStyle) Who(s string) string     { return s }
 
-func renderPeek(s *Session, turns []Turn, width int, st style) string {
+func renderHeader(s *Session, width int, st style) string {
 	var b strings.Builder
 	w := func(format string, a ...any) { fmt.Fprintf(&b, format, a...) }
 
-	w("%s\n", st.Heading(s.Title))
+	w("%s\n", st.Heading(oneLine(s.Title, max(20, width))))
 	w("%s %s   %s %s   %s %s   %s %s ago   %s %s\n",
 		st.Label("agent"), s.AgentName(),
 		st.Label("repo"), s.Repo(), st.Label("branch"), orDash(s.Branch),
@@ -208,11 +241,21 @@ func renderPeek(s *Session, turns []Turn, width int, st style) string {
 		}
 		w("%s %s%s\n", st.Label("phone"), rc, more)
 	}
-	for _, pr := range s.PRs {
+	for i, pr := range s.PRs {
+		if i >= 2 {
+			w("%s\n", st.Dim(fmt.Sprintf("  (+%d more PRs in stats)", len(s.PRs)-2)))
+			break
+		}
 		w("%s #%d %s\n", st.Label("PR"), pr.Number, pr.URL)
 	}
+	return strings.TrimRight(b.String(), "\n")
+}
 
-	w("\n%s\n", st.Label("── opening prompt ──"))
+func renderPeekBody(s *Session, turns []Turn, width int, st style) string {
+	var b strings.Builder
+	w := func(format string, a ...any) { fmt.Fprintf(&b, format, a...) }
+
+	w("%s\n", st.Label("── opening prompt ──"))
 	if s.FirstPrompt != "" {
 		w("%s\n", wrap(s.FirstPrompt, width, 12))
 	} else {
@@ -223,11 +266,14 @@ func renderPeek(s *Session, turns []Turn, width int, st style) string {
 	if len(turns) == 0 {
 		w("%s\n", st.Dim("(nothing yet)"))
 	}
-	for _, t := range turns {
+	for i, t := range turns {
 		switch t.Who {
 		case "tool":
 			w("%s\n", st.Dim("  ⏺ "+oneLine(t.Text, width-4)))
 		default:
+			if i > 0 && t.Who == "you" {
+				w("\n")
+			}
 			// Indent continuation lines past "claude: " so they don't read as a
 			// new speaker.
 			w("%s %s\n", st.Who(t.Who+":"), strings.ReplaceAll(wrap(t.Text, width-8, 6), "\n", "\n        "))
@@ -236,18 +282,26 @@ func renderPeek(s *Session, turns []Turn, width int, st style) string {
 	return b.String()
 }
 
+func renderPeek(s *Session, turns []Turn, width int, st style) string {
+	return renderHeader(s, width, st) + "\n\n" + renderPeekBody(s, turns, width, st)
+}
+
 func stateWords(s *Session) string {
+	busy := ""
+	if s.Busy {
+		busy = ", busy (mid-reply)"
+	}
 	switch s.State {
 	case LiveTmux:
-		return "running in tmux " + s.Tmux
+		return "running in tmux " + s.Tmux + busy
 	case LiveOutside:
 		if s.Spawner != "" {
-			return fmt.Sprintf("running headless under the %s spawner (pid %d)", spawnerName(s.Spawner), s.PID)
+			return fmt.Sprintf("running headless under the %s spawner (pid %d)%s", spawnerName(s.Spawner), s.PID, busy)
 		}
 		if s.PID == 0 {
-			return fmt.Sprintf("running outside tmux (locked by %s, pid unknown)", s.AgentName())
+			return fmt.Sprintf("running outside tmux (locked by %s, pid unknown)%s", s.AgentName(), busy)
 		}
-		return fmt.Sprintf("running outside tmux (pid %d)", s.PID)
+		return fmt.Sprintf("running outside tmux (pid %d)%s", s.PID, busy)
 	}
 	return "not running"
 }
@@ -290,27 +344,15 @@ func wrap(s string, width, maxLines int) string {
 	return strings.Join(lines, "\n")
 }
 
-// renderStats is the other face of the right pane: numbers instead of text.
-// arts is nil while the footprint is still being measured.
-func renderStats(s *Session, arts []Artifact, width int, st style) string {
+// renderStatsBody is the scrollable body of the stats view when the session
+// header is pinned above the viewport.
+func renderStatsBody(s *Session, arts []Artifact, width int, st style) string {
 	var b strings.Builder
 	w := func(format string, a ...any) { fmt.Fprintf(&b, format, a...) }
 	row := func(k, v string) { w("%s %s\n", st.Label(fmt.Sprintf("%-17s", k)), v) }
 	x := s.Stats
 
-	w("%s\n", st.Heading(s.Title))
-	row("agent", s.AgentName()+"   "+st.Label("repo")+" "+s.Repo()+"   "+st.Label("branch")+" "+orDash(s.Branch))
-	row("state", stateWords(s))
-	row("uuid", s.UUID)
-	for i, br := range s.Bridges {
-		if i == 0 {
-			row("phone", br)
-		} else {
-			row("", st.Dim(br+"  (older)"))
-		}
-	}
-
-	w("\n%s\n", st.Label("── size ──"))
+	w("%s\n", st.Label("── size ──"))
 	if fi, err := os.Stat(s.File); err == nil {
 		row("transcript", fmt.Sprintf("%s   %d entries", humanBytes(fi.Size()), s.Lines))
 	}
@@ -346,6 +388,17 @@ func renderStats(s *Session, arts []Artifact, width int, st style) string {
 		row("models", strings.Join(x.Models, ", "))
 	}
 
+	if len(s.Bridges) > 1 {
+		w("\n%s\n", st.Label("── phone ids ──"))
+		for i, br := range s.Bridges {
+			if i == 0 {
+				row("current", br)
+			} else {
+				row("older", st.Dim(br))
+			}
+		}
+	}
+
 	if len(s.PRs) > 0 {
 		w("\n%s\n", st.Label("── pull requests ──"))
 		for _, pr := range s.PRs {
@@ -353,6 +406,10 @@ func renderStats(s *Session, arts []Artifact, width int, st style) string {
 		}
 	}
 	return b.String()
+}
+
+func renderStats(s *Session, arts []Artifact, width int, st style) string {
+	return renderHeader(s, width, st) + "\n\n" + renderStatsBody(s, arts, width, st)
 }
 
 func parseTS(s string) (time.Time, bool) {
