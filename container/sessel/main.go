@@ -26,6 +26,7 @@ const usage = `sessel: Claude Code, Codex and Antigravity sessions on this conta
                                           create /develop/<name>, git init, and serve or start
   sessel serve [-n] [-status]             keep a Claude spawner per recent repo, for the phone
   sessel upgrade [-n]                     restart idle spawners and sessions on the newest claude
+  sessel accounts                         clauth accounts, fallback chains and usage windows
 
 <id> is a session uuid, a session_01… or cse_01… id, or a claude.ai/code URL.
 `
@@ -57,6 +58,8 @@ func main() {
 		err = cmdServe(args)
 	case "upgrade":
 		err = cmdUpgrade(args)
+	case "accounts":
+		fmt.Print(renderAccountsBody(loadClauthStatus(), 100, plainStyle{}))
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return

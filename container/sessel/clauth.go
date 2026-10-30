@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -40,9 +41,11 @@ type clauthProfile struct {
 	Name        string          `json:"name"`
 	Active      bool            `json:"active"`
 	Tier        string          `json:"tier"`
+	Provider    string          `json:"provider"`
 	Harness     string          `json:"harness"`
 	AuthStatus  string          `json:"auth_status"`
 	FetchStatus string          `json:"fetch_status"`
+	FetchedAt   string          `json:"fetched_at"`
 	Stale       bool            `json:"stale"`
 	Fallback    *clauthFallback `json:"fallback"`
 	Windows     []clauthWindow  `json:"windows"`
@@ -52,6 +55,7 @@ type clauthStatus struct {
 	ActiveProfile      string          `json:"active_profile"`
 	ActiveCodexProfile string          `json:"active_codex_profile"`
 	CodexFallbackChain []string        `json:"codex_fallback_chain"`
+	RefreshIntervalMs  int64           `json:"refresh_interval_ms"`
 	Profiles           []clauthProfile `json:"profiles"`
 	TPS                struct {
 		Sessions map[string]struct {
@@ -217,4 +221,161 @@ func reconcileCodexPreferred(dry bool) error {
 		return fmt.Errorf("clauth switch %s: %s", preferred, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// pctStyler colours a usage figure by how close it is to the cap. Only the
+// TUI style implements it; plain output stays uncoloured.
+type pctStyler interface {
+	Pct(pct float64, s string) string
+}
+
+// claudeChain is the Claude fallback chain in position order.
+func (cs *clauthStatus) claudeChain() []string {
+	var ps []clauthProfile
+	for _, p := range cs.Profiles {
+		if p.Harness == AgentClaude && p.Fallback != nil && p.Fallback.Position > 0 {
+			ps = append(ps, p)
+		}
+	}
+	sort.Slice(ps, func(i, j int) bool { return ps[i].Fallback.Position < ps[j].Fallback.Position })
+	out := make([]string, len(ps))
+	for i, p := range ps {
+		out[i] = p.Name
+	}
+	return out
+}
+
+func usageBar(pct float64, width int) string {
+	n := int(pct/100*float64(width) + 0.5)
+	n = max(0, min(width, n))
+	return strings.Repeat("█", n) + strings.Repeat("░", width-n)
+}
+
+func resetsIn(ts string) string {
+	t, ok := parseTS(ts)
+	if !ok {
+		return ""
+	}
+	if d := time.Until(t); d > 0 {
+		return "resets in " + span(d)
+	}
+	return "reset due"
+}
+
+// renderAccountsBody is the accounts view: every clauth profile per harness,
+// in fallback order, with a bar and reset time for each usage window.
+func renderAccountsBody(cs *clauthStatus, width int, st style) string {
+	if cs == nil {
+		return st.Dim("clauth is not set up: there is no ~/.clauth/status.json.\n" +
+			"Run `clauth login <name>` and start `clauth daemon`, see the README.")
+	}
+	var b strings.Builder
+	w := func(format string, a ...any) { fmt.Fprintf(&b, format, a...) }
+	pct := func(p float64, s string) string {
+		if ps, ok := st.(pctStyler); ok {
+			return ps.Pct(p, s)
+		}
+		return s
+	}
+	barW := max(10, min(24, width-40))
+
+	sections := []struct {
+		harness, title string
+		chain          []string
+	}{
+		{AgentClaude, "Claude Code", cs.claudeChain()},
+		{AgentCodex, "Codex", cs.CodexFallbackChain},
+	}
+	for _, sec := range sections {
+		var ps []clauthProfile
+		for _, p := range cs.Profiles {
+			if p.Harness == sec.harness {
+				ps = append(ps, p)
+			}
+		}
+		if len(ps) == 0 {
+			continue
+		}
+		pos := map[string]int{}
+		for i, n := range sec.chain {
+			pos[n] = i + 1
+		}
+		sort.SliceStable(ps, func(i, j int) bool {
+			pi, pj := pos[ps[i].Name], pos[ps[j].Name]
+			if pi == 0 {
+				pi = 1 << 20
+			}
+			if pj == 0 {
+				pj = 1 << 20
+			}
+			return pi < pj
+		})
+
+		if b.Len() > 0 {
+			w("\n")
+		}
+		w("%s\n", st.Heading("── "+sec.title+" ──"))
+		if len(sec.chain) > 0 {
+			w("%s %s\n", st.Label("chain"), strings.Join(sec.chain, " → "))
+			w("%s\n", st.Dim("      the first is preferred; the next takes over when it runs out"))
+		}
+		for _, p := range ps {
+			mark, role := "○", "standby"
+			if p.Active {
+				mark, role = "●", "active"
+				if cs.profileOverflowed(p) && len(sec.chain) > 0 {
+					role = "active, overflowed from " + sec.chain[0]
+				}
+			}
+			plan := p.Tier
+			if plan == "" {
+				plan = p.Provider
+			}
+			var notes []string
+			if n := pos[p.Name]; n > 0 {
+				notes = append(notes, fmt.Sprintf("#%d in chain", n))
+			}
+			if p.Fallback != nil && p.Fallback.Threshold > 0 {
+				notes = append(notes, fmt.Sprintf("switches at %.0f%%", p.Fallback.Threshold))
+			}
+			switch {
+			case p.AuthStatus != "" && p.AuthStatus != "ok" && p.AuthStatus != "unknown":
+				notes = append(notes, "login "+p.AuthStatus)
+			case p.FetchedAt != "":
+				if t, ok := parseTS(p.FetchedAt); ok {
+					u := "updated " + age(t) + " ago"
+					if p.Stale {
+						u += " (stale)"
+					}
+					notes = append(notes, u)
+				}
+			}
+			head := fmt.Sprintf("%s %-15s %s", mark, p.Name, role)
+			if p.Active {
+				head = st.Who(head)
+			}
+			w("\n%s  %s\n", head, st.Dim(plan))
+			if len(notes) > 0 {
+				w("  %s\n", st.Dim(strings.Join(notes, " · ")))
+			}
+			if len(p.Windows) == 0 {
+				w("  %s\n", st.Dim("no usage reported yet; the daemon fetches it on its next pass"))
+				continue
+			}
+			for _, win := range p.Windows {
+				label := fmt.Sprintf("%-9s", win.Label)
+				w("  %s %s %s  %s\n", st.Label(label),
+					pct(win.UtilizationPct, usageBar(win.UtilizationPct, barW)),
+					pct(win.UtilizationPct, fmt.Sprintf("%3.0f%%", win.UtilizationPct)),
+					st.Dim(resetsIn(win.ResetsAt)))
+			}
+		}
+	}
+	every := "90s"
+	if cs.RefreshIntervalMs > 0 {
+		every = fmt.Sprintf("%ds", cs.RefreshIntervalMs/1000)
+	}
+	w("\n%s\n", st.Dim("From ~/.clauth/status.json, refreshed by the clauth daemon every "+every+
+		". `clauth` on the laptop logs accounts in and out."))
+	return b.String()
 }

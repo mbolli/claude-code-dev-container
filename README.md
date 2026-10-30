@@ -300,12 +300,13 @@ Run it with no arguments for the browser, from the laptop as `sessel` or
 | `R` | Rename a stopped session (updates the Claude transcript, Codex SQLite/index, or `agy` summary DB). Running sessions must be renamed from inside the session so the running process does not write its old title back |
 | `n` | New project: creates `/develop/<name>` (or `<agent>:<name>` such as `codex:my-tool` or `agy:my-repo`), runs `git init`, starts a phone spawner for Claude, and opens the first session in `tmux` |
 | `r` | Reload transcripts and live state immediately (also refreshes every 2 seconds) |
+| `u` | Accounts view: every `clauth` account for Claude and Codex in fallback order, with plan, chain position, handover threshold, and a bar and reset time per usage window |
 | `?`, `F1` | Toggle the in-app keyboard shortcuts guide and status marker legend (`◉` busy mid-reply, `●` live in tmux, `◦` idle in background spawner, `◐` live outside tmux, `✗` marked) |
 | `q`, `ctrl+c` | Quit |
 
 The same things are subcommands: `sessel ls` (`-agent claude|codex|agy`),
 `open`, `peek`, `rename`, `rm`, `new` (`-agent claude|codex|agy` or
-`<agent>:<name>`), `serve`, `upgrade`, `resolve`, `json`. `sessel --help`
+`<agent>:<name>`), `serve`, `upgrade`, `accounts`, `resolve`, `json`. `sessel --help`
 lists them.
 
 **Delete is real.** For Claude it removes the transcript, the session's
@@ -381,5 +382,5 @@ clauth                                   # interactive account and usage TUI
 ```
 
 `sessel` shows the active `clauth` profiles and window percentages in the
-session list header (highlighting overflowed accounts with `↪`) and lists all
-configured profiles and reset timers in the `s` stats pane.
+session list header (highlighting overflowed accounts with `↪`). Press `u` for
+the full accounts view, or run `sessel accounts` for the same as plain text.

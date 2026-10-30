@@ -58,6 +58,16 @@ func (tuiStyle) Label(s string) string   { return sLabel.Render(s) }
 func (tuiStyle) Dim(s string) string     { return sDim.Render(s) }
 func (tuiStyle) Who(s string) string     { return sWho.Render(s) }
 
+func (tuiStyle) Pct(pct float64, s string) string {
+	switch {
+	case pct >= 95:
+		return sWarn.Render(s)
+	case pct >= 80:
+		return sBusy.Render(s)
+	}
+	return sLive.Render(s)
+}
+
 type peekMsg struct {
 	uuid  string
 	mtime time.Time
@@ -104,6 +114,7 @@ type model struct {
 	shownFor  string // the session or view key the pane currently shows
 	showStats bool   // the right pane shows stats instead of the peek
 	showHelp  bool   // the right pane shows the keyboard shortcuts & legend
+	showAccts bool   // the right pane shows clauth accounts and usage windows
 	arts      map[string]artsMsg
 
 	note  string
@@ -199,7 +210,7 @@ func (m *model) refilter() {
 }
 
 func (m *model) loadPeek() tea.Cmd {
-	if m.showHelp {
+	if m.showHelp || m.showAccts {
 		m.setPeek()
 		return nil
 	}
@@ -239,11 +250,17 @@ func (m *model) setPeek() {
 	m.peek.Height = m.viewportHeight(m.listHeight())
 	width := max(20, m.peek.Width-2)
 
-	if m.showHelp {
-		same := m.shownFor == "__help__"
+	if m.showHelp || m.showAccts {
+		key, content := "__help__", ""
+		if m.showAccts {
+			key, content = "__accounts__", renderAccountsBody(m.st.Clauth, width, tuiStyle{})
+		} else {
+			content = renderHelpBody(width)
+		}
+		same := m.shownFor == key
 		offset := m.peek.YOffset
-		m.shownFor = "__help__"
-		m.peek.SetContent(renderHelpBody(width))
+		m.shownFor = key
+		m.peek.SetContent(content)
 		if !same {
 			m.peek.GotoTop()
 		} else {
@@ -379,10 +396,15 @@ func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "?":
 			m.showHelp = !m.showHelp
+			m.showAccts = false
 			m.setPeek()
 			return m, nil
-		case "s":
+		case "u":
+			m.showAccts = !m.showAccts
 			m.showHelp = false
+			return m, m.loadPeek()
+		case "s":
+			m.showHelp, m.showAccts = false, false
 			m.showStats = !m.showStats
 			return m, m.loadPeek()
 		case "g", "home":
@@ -403,12 +425,17 @@ func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k.String() {
 	case "?", "f1":
 		m.showHelp = !m.showHelp
+		m.showAccts = false
+		return m, m.loadPeek()
+	case "u":
+		m.showAccts = !m.showAccts
+		m.showHelp = false
 		return m, m.loadPeek()
 	case "q", "ctrl+c":
 		return m, tea.Quit
 	case "esc":
-		if m.showHelp {
-			m.showHelp = false
+		if m.showHelp || m.showAccts {
+			m.showHelp, m.showAccts = false, false
 			return m, m.loadPeek()
 		}
 		if m.query != "" || m.agentFilter != "" || m.liveOnly {
@@ -464,7 +491,7 @@ func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.say("reloaded")
 		return m, reload()
 	case "s":
-		m.showHelp = false
+		m.showHelp, m.showAccts = false, false
 		m.showStats = !m.showStats
 		return m, m.loadPeek()
 	case " ":
@@ -709,7 +736,7 @@ func (m *model) listHeight() int     { return max(1, m.h-3) }
 func (m *model) listRowsHeight() int { return max(1, m.listHeight()-2) }
 
 func (m *model) pinnedHeaderLines() int {
-	if m.showHelp {
+	if m.showHelp || m.showAccts {
 		return 2
 	}
 	s := m.current()
@@ -761,12 +788,18 @@ func (m *model) View() string {
 
 func (m *model) viewRight(boxH int) string {
 	width := m.rightWidth()
-	if m.showHelp {
+	if m.showHelp || m.showAccts {
 		title := sHeading.Render("Keyboard Shortcuts & Status Legend")
 		hint := sDim.Render("? or esc to close")
+		label := "help"
+		if m.showAccts {
+			title = sHeading.Render("Accounts & Usage (clauth)")
+			hint = sDim.Render("u or esc to close")
+			label = "accounts"
+		}
 		gap := max(1, width-ansi.StringWidth(title)-ansi.StringWidth(hint))
 		top := title + strings.Repeat(" ", gap) + hint
-		div := m.viewRightDivider("help", width)
+		div := m.viewRightDivider(label, width)
 		m.peek.Height = max(1, boxH-2)
 		return top + "\n" + div + "\n" + m.peek.View()
 	}
@@ -793,7 +826,7 @@ func (m *model) viewRightDivider(modeLabel string, width int) string {
 	left := sDim.Render("── ") + sPill.Render(modeLabel) + sDim.Render(" ")
 	var rightParts []string
 	switch {
-	case m.showHelp:
+	case m.showHelp, m.showAccts:
 		rightParts = append(rightParts, "J/K or ctrl+d/u scroll")
 	case m.peekFocus:
 		rightParts = append(rightParts, "↑↓ pgup/pgdn scroll · tab back")
@@ -1050,12 +1083,16 @@ func (m *model) viewFooter() string {
 			pair("q", "quit"),
 		}, sep)
 	}
-	if m.showHelp {
+	if m.showHelp || m.showAccts {
+		closeKey, closeDesc := "?/esc", "close help"
+		if m.showAccts {
+			closeKey, closeDesc = "u/esc", "close accounts"
+		}
 		return " " + strings.Join([]string{
-			pair("J/K", "scroll help"),
+			pair("J/K", "scroll"),
 			pair("ctrl+d/u", "half-page"),
 			pair("↑↓", "select session"),
-			pair("?/esc", "close help"),
+			pair(closeKey, closeDesc),
 			pair("q", "quit"),
 		}, sep)
 	}
@@ -1077,6 +1114,7 @@ func (m *model) viewFooter() string {
 		pair("R", "rename"),
 		pair("n", "new"),
 		pair("a", "tmp"),
+		pair("u", "accounts"),
 	}
 	if m.hasActiveFilters() {
 		items = append(items, pair("esc", "clear filters"))
@@ -1132,6 +1170,7 @@ func renderHelpBody(width int) string {
 	row("R", "Rename a stopped session (updates the Claude transcript, Codex SQLite/index, or agy summary DB). Running sessions must be renamed from inside the session so the running process does not overwrite the title.")
 	row("n", "Create a new project in /develop/<name>, run git init, and start its first session in tmux (for Claude, also launches a phone Remote Control spawner). Prefix with <agent>:<name> (e.g. codex:my-tool or agy:my-app) to pick the agent.")
 	row("r", "Rescan transcripts and refresh live process and tmux state immediately (also refreshes automatically every 2 seconds).")
+	row("u", "Show every clauth account for Claude Code and Codex in fallback order: which one is active, plan, chain position, the threshold at which it hands over, and a bar plus reset time for each usage window (5h, 7d, and per-model weekly caps). The list header shows the active accounts in short form; an amber ↪ means the work account has taken over.")
 	row("?, F1", "Toggle this keyboard shortcuts and status legend view.")
 	row("q, ctrl+c", "Quit sessel.")
 

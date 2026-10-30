@@ -524,6 +524,21 @@ func TestClauthIntegrationAndCodexReturnToPreferred(t *testing.T) {
 	if !strings.Contains(pill, "cla:work 12% ↪") || !strings.Contains(pill, "cdx:work 25% ↪") {
 		t.Errorf("renderClauthPill = %q, want overflow indicators", pill)
 	}
+	accts := renderAccountsBody(st.Clauth, 100, plainStyle{})
+	for _, want := range []string{
+		"chain private → work",
+		"chain codex-private → codex-work",
+		"● work            active, overflowed from private",
+		"○ private",
+		"switches at 95%",
+	} {
+		if !strings.Contains(accts, want) {
+			t.Errorf("renderAccountsBody missing %q:\n%s", want, accts)
+		}
+	}
+	if strings.Index(accts, "○ private") > strings.Index(accts, "● work") {
+		t.Errorf("accounts not in chain order:\n%s", accts)
+	}
 
 	// Test reconcileCodexPreferred switches back to codex-private since its 7d window is 10% (< 90%).
 	marker := filepath.Join(tmp, "switched")
