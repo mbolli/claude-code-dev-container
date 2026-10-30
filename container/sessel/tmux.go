@@ -109,9 +109,21 @@ func Resume(s *Session) error {
 }
 
 // ResumeDetached starts Resume's tmux session without attaching to it.
+// Non-Claude sessions use '@' before the agent name because tmuxName only
+// emits [A-Za-z0-9_-], so <repo>@codex cannot collide with a repo named
+// <repo>-codex.
 func ResumeDetached(s *Session) (string, error) {
-	name := tmuxName(s.Cwd) + "-" + s.UUID[:8]
-	return name, ensureSession(name, s.Cwd, "claude", "--remote-control", s.Title, "--resume", s.UUID)
+	switch s.AgentName() {
+	case AgentCodex:
+		name := tmuxName(s.Cwd) + "@codex-" + s.UUID[:8]
+		return name, ensureSession(name, s.Cwd, "codex", "resume", s.UUID)
+	case AgentAgy:
+		name := tmuxName(s.Cwd) + "@agy-" + s.UUID[:8]
+		return name, ensureSession(name, s.Cwd, "agy", "--remote-control", "--conversation", s.UUID)
+	default:
+		name := tmuxName(s.Cwd) + "-" + s.UUID[:8]
+		return name, ensureSession(name, s.Cwd, "claude", "--remote-control", s.Title, "--resume", s.UUID)
+	}
 }
 
 // Attach goes to the pane a live session runs in (session:@window.%pane).
@@ -128,10 +140,25 @@ func Attach(target string) error {
 	return execTmux(sess, pre...)
 }
 
+// StartDetached starts a fresh session in dir without attaching to it.
+func StartDetached(dir, agent string) (string, error) {
+	switch agent {
+	case AgentCodex:
+		name := tmuxName(dir) + "@codex"
+		return name, ensureSession(name, dir, "codex")
+	case AgentAgy:
+		name := tmuxName(dir) + "@agy"
+		return name, ensureSession(name, dir, "agy", "--remote-control")
+	default:
+		name := tmuxName(dir)
+		return name, ensureSession(name, dir, "claude", "--remote-control", filepath.Base(dir))
+	}
+}
+
 // Start opens a fresh session in dir, like devwork.
-func Start(dir string) error {
-	name := tmuxName(dir)
-	if err := ensureSession(name, dir, "claude", "--remote-control", filepath.Base(dir)); err != nil {
+func Start(dir, agent string) error {
+	name, err := StartDetached(dir, agent)
+	if err != nil {
 		return err
 	}
 	return execTmux("=" + name)

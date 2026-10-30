@@ -77,6 +77,7 @@ type model struct {
 	top         int
 	marked      map[string]bool
 	showScratch bool
+	agentFilter string // "", "claude", "codex", "agy"
 
 	mode    mode
 	label   string // what the text input is for
@@ -154,10 +155,13 @@ func (m *model) refilter() {
 	q := strings.ToLower(m.query)
 	m.rows = m.rows[:0]
 	for _, s := range m.st.Sessions {
+		if m.agentFilter != "" && s.AgentName() != m.agentFilter {
+			continue
+		}
 		if s.Scratch() && !m.showScratch {
 			continue
 		}
-		if q != "" && !strings.Contains(strings.ToLower(s.Title+" "+s.Repo()+" "+s.UUID+" "+strings.Join(s.Bridges, " ")), q) {
+		if q != "" && !strings.Contains(strings.ToLower(s.AgentName()+" "+s.Title+" "+s.Repo()+" "+s.UUID+" "+strings.Join(s.Bridges, " ")), q) {
 			continue
 		}
 		m.rows = append(m.rows, s)
@@ -343,6 +347,10 @@ func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.peekFocus = true
 	case "/":
 		m.startInput(filtering, m.query, "filter")
+	case "f":
+		m.agentFilter = nextAgentFilter(m.agentFilter)
+		m.refilter()
+		return m, m.loadPeek()
 	case "a":
 		m.showScratch = !m.showScratch
 		m.refilter()
@@ -367,17 +375,27 @@ func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "R":
 		if s := m.current(); s != nil {
 			if s.State != Dead {
-				m.fail(fmt.Errorf("it is running and would write its own title back; use /rename inside it"))
+				if s.AgentName() == AgentClaude {
+					m.fail(fmt.Errorf("it is running and would write its own title back; use /rename inside it"))
+				} else {
+					m.fail(fmt.Errorf("it is running and would write its own title back; rename it inside the session"))
+				}
 			} else {
 				m.startInput(renaming, s.Title, "rename")
 			}
 		}
 	case "n":
-		m.startInput(naming, "", "new project /develop/")
+		prompt := "new project /develop/ (name or agent:name)"
+		if m.agentFilter != "" {
+			prompt = fmt.Sprintf("new %s project /develop/ (name or agent:name)", m.agentFilter)
+		}
+		m.startInput(naming, "", prompt)
 	case "enter":
 		s := m.current()
 		switch {
 		case s == nil:
+		case s.State == LiveOutside && s.PID == 0:
+			m.fail(Stop(s))
 		case s.State == LiveOutside:
 			m.pending, m.mode = []*Session{s}, confirmMove
 		default:
@@ -435,13 +453,22 @@ func (m *model) textKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if v == "" {
 				return m, nil
 			}
-			dir, err := NewProject(v)
+			defAgent := m.agentFilter
+			if defAgent == "" {
+				defAgent = AgentClaude
+			}
+			name, agent, err := parseNewSpec(v, defAgent)
 			if err != nil {
 				m.fail(err)
 				return m, nil
 			}
-			// On the phone already; open a first session here too.
-			m.then = func() error { return Start(dir) }
+			dir, err := NewProject(name, agent)
+			if err != nil {
+				m.fail(err)
+				return m, nil
+			}
+			// Open a first session here.
+			m.then = func() error { return Start(dir, agent) }
 			return m, tea.Quit
 		}
 	}
@@ -474,6 +501,10 @@ func (m *model) askDelete() {
 	var bytes int64
 	running := 0
 	for _, s := range targets {
+		if s.State != Dead && s.PID == 0 {
+			m.fail(Stop(s))
+			return
+		}
 		f, b := totals(m.st.Footprint(s))
 		files, bytes = files+f, bytes+b
 		if s.State != Dead {
@@ -581,7 +612,7 @@ func (m *model) viewList() string {
 	}
 	width := m.listWidth()
 	repoW := 16
-	titleW := max(8, width-repoW-13)
+	titleW := max(8, width-repoW-20)
 	var b strings.Builder
 	for i := m.top; i < min(len(m.rows), m.top+h); i++ {
 		s := m.rows[i]
@@ -607,7 +638,7 @@ func (m *model) viewList() string {
 		if s.State != Dead {
 			state = bg(sLive).Render(marker(s.State))
 		}
-		text := fmt.Sprintf(" %-4s %-*s %s", age(s.Mtime), repoW, oneLine(s.Repo(), repoW), oneLine(s.Title, titleW))
+		text := fmt.Sprintf(" %-4s %-6s %-*s %s", age(s.Mtime), s.AgentName(), repoW, oneLine(s.Repo(), repoW), oneLine(s.Title, titleW))
 		line := ansi.Truncate(cur+mark+state+plain.Render(text), width, "…")
 		if pad := width - ansi.StringWidth(line); pad > 0 {
 			line += plain.Render(strings.Repeat(" ", pad))
@@ -642,11 +673,14 @@ func (m *model) viewFooter() string {
 	if m.showStats {
 		view = "peek"
 	}
-	help := "↑↓ move · enter open · s " + view + " · tab scroll · / filter · space mark · d delete · R rename · n new · a scratch · q quit"
+	help := "↑↓ move · enter open · s " + view + " · tab scroll · / filter · f agent · space mark · d delete · R rename · n new · a scratch · q quit"
 	if m.peekFocus {
 		help = "↑↓ pgup pgdn scroll · tab back · q quit"
 	}
 	info := fmt.Sprintf(" %d sessions", len(m.rows))
+	if m.agentFilter != "" {
+		info = fmt.Sprintf(" %d %s sessions", len(m.rows), m.agentFilter)
+	}
 	if len(m.marked) > 0 {
 		info += fmt.Sprintf(", %d marked", len(m.marked))
 	}
@@ -654,4 +688,17 @@ func (m *model) viewFooter() string {
 		info += fmt.Sprintf(", filter %q", m.query)
 	}
 	return sDim.Render(info + " · " + help)
+}
+
+func nextAgentFilter(cur string) string {
+	switch cur {
+	case "":
+		return AgentClaude
+	case AgentClaude:
+		return AgentCodex
+	case AgentCodex:
+		return AgentAgy
+	default:
+		return ""
+	}
 }

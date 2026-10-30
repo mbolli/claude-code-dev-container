@@ -36,7 +36,7 @@ func wantedRepos(st *Store) []string {
 	cutoff := time.Now().Add(-serveDays * 24 * time.Hour)
 	set := map[string]bool{}
 	for _, s := range st.Sessions {
-		if s.Mtime.Before(cutoff) || !strings.HasPrefix(s.Cwd, developRoot+"/") {
+		if s.AgentName() != AgentClaude || s.Mtime.Before(cutoff) || !strings.HasPrefix(s.Cwd, developRoot+"/") {
 			continue
 		}
 		top := strings.SplitN(strings.TrimPrefix(s.Cwd, developRoot+"/"), "/", 2)[0]
@@ -316,11 +316,38 @@ func cmdServe(args []string) error {
 	return nil
 }
 
-// NewProject creates /develop/<name>, runs git init, trusts it and serves it
-// to the phone. An existing directory is only served.
-func NewProject(name string) (string, error) {
+// parseNewSpec splits an optional "<agent>:<name>" prefix and validates both.
+func parseNewSpec(raw, defaultAgent string) (name, agent string, err error) {
+	raw = strings.TrimSpace(raw)
+	agent = defaultAgent
+	if agent == "" {
+		agent = AgentClaude
+	}
+	name = raw
+	if prefix, rest, ok := strings.Cut(raw, ":"); ok {
+		if !validAgent(prefix) {
+			return "", "", fmt.Errorf("unknown agent %q (use claude, codex or agy)", prefix)
+		}
+		agent = prefix
+		name = strings.TrimSpace(rest)
+	}
+	if !validAgent(agent) {
+		return "", "", fmt.Errorf("unknown agent %q (use claude, codex or agy)", agent)
+	}
+	if !repoNameRe.MatchString(name) || strings.HasPrefix(name, ".") {
+		return "", "", fmt.Errorf("%q: use letters, digits, '.', '_' and '-', not starting with '.'", name)
+	}
+	return name, agent, nil
+}
+
+// NewProject creates /develop/<name>, runs git init, and for Claude projects
+// trusts it and serves it to the phone.
+func NewProject(name, agent string) (string, error) {
 	if !repoNameRe.MatchString(name) || strings.HasPrefix(name, ".") {
 		return "", fmt.Errorf("%q: use letters, digits, '.', '_' and '-', not starting with '.'", name)
+	}
+	if agent == "" {
+		agent = AgentClaude
 	}
 	dir := filepath.Join(developRoot, name)
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
@@ -331,22 +358,39 @@ func NewProject(name string) (string, error) {
 			return "", fmt.Errorf("git init: %s", strings.TrimSpace(string(out)))
 		}
 	}
-	if _, ok := servedWindows()[name]; !ok {
-		if err := startSpawner(dir); err != nil {
-			return "", err
+	if agent == AgentClaude {
+		if _, ok := servedWindows()[name]; !ok {
+			if err := startSpawner(dir); err != nil {
+				return "", err
+			}
 		}
 	}
 	return dir, nil
 }
 
 func cmdNew(args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("usage: sessel new <name>")
+	fl := flag.NewFlagSet("new", flag.ExitOnError)
+	agentFlag := fl.String("agent", AgentClaude, "agent to launch (claude, codex or agy)")
+	fl.Parse(args)
+	if fl.NArg() != 1 {
+		return fmt.Errorf("usage: sessel new [-agent claude|codex|agy] [<agent>:]<name>")
 	}
-	dir, err := NewProject(args[0])
+	name, agent, err := parseNewSpec(fl.Arg(0), *agentFlag)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("%s is ready and on your phone as %q\n", dir, filepath.Base(dir))
+	dir, err := NewProject(name, agent)
+	if err != nil {
+		return err
+	}
+	if agent == AgentClaude {
+		fmt.Printf("%s is ready and on your phone as %q\n", dir, filepath.Base(dir))
+		return nil
+	}
+	sessName, err := StartDetached(dir, agent)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s is ready in tmux %q (%s)\n", dir, sessName, agent)
 	return nil
 }

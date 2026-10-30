@@ -1,5 +1,5 @@
-// sessel lists, peeks, resumes, moves, renames and deletes the Claude Code
-// sessions on this container, addressed by either of their two ids.
+// sessel lists, peeks, resumes, moves, renames and deletes Claude Code, Codex
+// and Antigravity (agy) sessions on this container.
 package main
 
 import (
@@ -10,22 +10,24 @@ import (
 	"text/tabwriter"
 )
 
-const usage = `sessel: Claude Code sessions on this container
+const usage = `sessel: Claude Code, Codex and Antigravity sessions on this container
 
-  sessel                        browse them (TUI)
-  sessel ls [-a]                table, newest first (-a: include /tmp scratchpads)
-  sessel open [-d] <id>         what Enter does: resume, attach, or move into tmux
-                                (-d: resume a stopped one in tmux, don't attach)
-  sessel resolve <id>           uuid, cwd, state (dead|tmux|outside), tmux target
-  sessel json                   every session, for tools
-  sessel peek <id>              what the session was about and where it stopped
-  sessel rename <id> <title>    set a title, as /rename does
-  sessel rm [-n] [-f] <id>...   delete for real (-n: only list, -f: no prompt)
-  sessel new <name>             create /develop/<name>, git init, serve it to the phone
-  sessel serve [-n] [-status]   keep a spawner per recent repo, for the phone
-  sessel upgrade [-n]           restart idle spawners and sessions on the newest claude
+  sessel                                  browse them (TUI)
+  sessel ls [-a] [-agent claude|codex|agy]
+                                          table, newest first (-a: include /tmp scratchpads)
+  sessel open [-d] <id>                   what Enter does: resume, attach, or move into tmux
+                                          (-d: resume a stopped one in tmux, don't attach)
+  sessel resolve <id>                     uuid, cwd, state (dead|tmux|outside), tmux target, agent
+  sessel json                             every session, for tools
+  sessel peek <id>                        what the session was about and where it stopped
+  sessel rename <id> <title>              set a title, as /rename does
+  sessel rm [-n] [-f] <id>...             delete for real (-n: only list, -f: no prompt)
+  sessel new [-agent claude|codex|agy] [<agent>:]<name>
+                                          create /develop/<name>, git init, and serve or start
+  sessel serve [-n] [-status]             keep a Claude spawner per recent repo, for the phone
+  sessel upgrade [-n]                     restart idle spawners and sessions on the newest claude
 
-<id> is a transcript uuid, a session_01… or cse_01… id, or a claude.ai/code URL.
+<id> is a session uuid, a session_01… or cse_01… id, or a claude.ai/code URL.
 `
 
 func main() {
@@ -80,12 +82,19 @@ func mustLoad() *Store {
 func cmdLs(args []string) error {
 	fs := flag.NewFlagSet("ls", flag.ExitOnError)
 	all := fs.Bool("a", false, "include /tmp scratchpad sessions")
+	agent := fs.String("agent", "", "filter by agent (claude, codex or agy)")
 	fs.Parse(args)
+	if *agent != "" && !validAgent(*agent) {
+		return fmt.Errorf("unknown agent %q (use claude, codex or agy)", *agent)
+	}
 	st := mustLoad()
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, " \tAGE\tREPO\tTITLE\tUUID (--resume)\tREMOTE CONTROL ID")
+	fmt.Fprintln(w, " \tAGE\tAGENT\tREPO\tTITLE\tUUID (--resume)\tREMOTE CONTROL ID")
 	n := 0
 	for _, s := range st.Sessions {
+		if *agent != "" && s.AgentName() != *agent {
+			continue
+		}
 		if s.Scratch() && !*all {
 			continue
 		}
@@ -99,8 +108,8 @@ func cmdLs(args []string) error {
 		} else if len(s.Bridges) > 1 {
 			rc = fmt.Sprintf("%s (+%d older)", rc, len(s.Bridges)-1)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
-			marker(s.State), age(s.Mtime), oneLine(s.Repo(), 28), oneLine(s.Title, 48), s.UUID, rc)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			marker(s.State), age(s.Mtime), s.AgentName(), oneLine(s.Repo(), 28), oneLine(s.Title, 48), s.UUID, rc)
 	}
 	return w.Flush()
 }
@@ -115,9 +124,9 @@ func marker(s State) string {
 	return " "
 }
 
-// cmdResolve prints uuid, cwd, state and tmux target, tab-separated. The fish
-// functions read this; state is what tells "not running" from "running
-// outside tmux", which an empty tmux target alone cannot.
+// cmdResolve prints uuid, cwd, state, tmux target and agent, tab-separated.
+// The fish functions read this; state is what tells "not running" from
+// "running outside tmux", which an empty tmux target alone cannot.
 func cmdResolve(args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: sessel resolve <id>")
@@ -126,7 +135,7 @@ func cmdResolve(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("%s\t%s\t%s\t%s\n", s.UUID, s.Cwd, s.State, s.Tmux)
+	fmt.Printf("%s\t%s\t%s\t%s\t%s\n", s.UUID, s.Cwd, s.State, s.Tmux, s.AgentName())
 	return nil
 }
 
@@ -152,6 +161,9 @@ func cmdOpen(args []string) error {
 		return err
 	}
 	if s.State == LiveOutside {
+		if s.PID == 0 {
+			return Stop(s)
+		}
 		if !confirm(MoveQuestion(s, 50)) {
 			return fmt.Errorf("left as it is")
 		}

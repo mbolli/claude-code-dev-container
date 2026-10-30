@@ -207,3 +207,37 @@ func TestAgyLivePrefersPresenceLockAndAgyComm(t *testing.T) {
 	}
 }
 
+func TestParseNewSpec(t *testing.T) {
+	cases := []struct {
+		raw      string
+		def      string
+		wantName string
+		wantAg   string
+		wantErr  bool
+	}{
+		{"my-repo", "", "my-repo", "claude", false},
+		{"my-repo", "agy", "my-repo", "agy", false},
+		{"agy:my-repo", "claude", "my-repo", "agy", false},
+		{"codex:my-repo", "claude", "my-repo", "codex", false},
+		{"claude:my-repo", "agy", "my-repo", "claude", false},
+		{"unknown:my-repo", "claude", "", "", true},
+		{"agy:.hidden", "claude", "", "", true},
+		{"agy:", "claude", "", "", true},
+	}
+	for _, tc := range cases {
+		name, ag, err := parseNewSpec(tc.raw, tc.def)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("parseNewSpec(%q, %q) succeeded, want error", tc.raw, tc.def)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("parseNewSpec(%q, %q) unexpected error: %v", tc.raw, tc.def, err)
+			continue
+		}
+		if name != tc.wantName || ag != tc.wantAg {
+			t.Errorf("parseNewSpec(%q, %q) = (%q, %q), want (%q, %q)", tc.raw, tc.def, name, ag, tc.wantName, tc.wantAg)
+		}
+	}
+}
