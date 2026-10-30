@@ -195,10 +195,10 @@ func (m *model) loadPeek() tea.Cmd {
 		return nil
 	}
 	m.setPeek()
-	uuid, file, mtime := s.UUID, s.File, s.Mtime
+	sess, mtime := s, s.Mtime
 	return func() tea.Msg {
-		turns, err := lastTurns(file, peekTurns)
-		return peekMsg{uuid, mtime, turns, err}
+		turns, err := lastTurnsFor(sess, peekTurns)
+		return peekMsg{sess.UUID, mtime, turns, err}
 	}
 }
 

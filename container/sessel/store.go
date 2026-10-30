@@ -77,8 +77,19 @@ type Stats struct {
 	LastMsgID string `json:"lastMsgId,omitempty"`
 }
 
+const (
+	AgentClaude = "claude"
+	AgentCodex  = "codex"
+	AgentAgy    = "agy"
+)
+
+func validAgent(a string) bool {
+	return a == AgentClaude || a == AgentCodex || a == AgentAgy
+}
+
 type Session struct {
 	UUID        string    `json:"uuid"`
+	Agent       string    `json:"agent"`
 	File        string    `json:"file"`
 	Project     string    `json:"project"`
 	Cwd         string    `json:"cwd"`
@@ -97,7 +108,15 @@ type Session struct {
 	Tmux        string    `json:"tmux,omitempty"`
 	Spawner     string    `json:"spawner,omitempty"` // tmux pane of the remote-control spawner that runs it
 	Busy        bool      `json:"busy,omitempty"`
+	Locked      bool      `json:"-"` // Codex thread-writer lock is held by a live process
 	procStart   string    // re-checked before signalling PID
+}
+
+func (s *Session) AgentName() string {
+	if s.Agent == "" {
+		return AgentClaude
+	}
+	return s.Agent
 }
 
 // Bridge is the current Remote Control id, or "".
@@ -156,6 +175,10 @@ func Load() (*Store, error) {
 	st := &Store{Home: claudeHome(), byUUID: map[string]*Session{}, registry: map[string][]regRecord{}}
 	st.loadRegistry()
 
+	cache := readCache()
+	next := map[string]cacheEntry{}
+	var mu sync.Mutex
+
 	files, _ := filepath.Glob(filepath.Join(st.Home, "projects", "*", "*.jsonl"))
 	var paths []string
 	for _, f := range files {
@@ -163,7 +186,7 @@ func Load() (*Store, error) {
 			paths = append(paths, f)
 		}
 	}
-	metas, stats := scanAll(paths)
+	metas, stats := scanPaths(paths, parseLine, cache, next, &mu)
 	for i, p := range paths {
 		if stats[i] == nil {
 			continue
@@ -172,6 +195,20 @@ func Load() (*Store, error) {
 		st.Sessions = append(st.Sessions, s)
 		st.byUUID[s.UUID] = s
 	}
+
+	codexSessions := loadCodexSessions(cache, next, &mu)
+	if len(codexSessions) > 0 {
+		procs := scanAgentProcs(loadTmuxPanes())
+		attachCodexLive(codexSessions, procs)
+	}
+	for _, s := range codexSessions {
+		if st.byUUID[s.UUID] == nil {
+			st.Sessions = append(st.Sessions, s)
+			st.byUUID[s.UUID] = s
+		}
+	}
+	writeCache(next)
+
 	sort.Slice(st.Sessions, func(i, j int) bool { return st.Sessions[i].Mtime.After(st.Sessions[j].Mtime) })
 	return st, nil
 }
@@ -198,7 +235,7 @@ func (st *Store) loadRegistry() {
 func (st *Store) session(path string, fi os.FileInfo, m meta) *Session {
 	uuid := strings.TrimSuffix(filepath.Base(path), ".jsonl")
 	s := &Session{
-		UUID: uuid, File: path, Project: filepath.Base(filepath.Dir(path)),
+		UUID: uuid, Agent: AgentClaude, File: path, Project: filepath.Base(filepath.Dir(path)),
 		Cwd: m.Cwd, Branch: m.Branch, FirstPrompt: m.FirstPrompt,
 		Mtime: fi.ModTime(), Lines: m.Lines, PRs: m.PRs, Stats: m.Stats,
 	}
@@ -352,7 +389,7 @@ func procStartOf(pid int) string {
 
 // ---- scanning, with an offset cache --------------------------------------
 
-const cacheVersion = 3
+const cacheVersion = 4
 
 type cacheEntry struct {
 	Size    int64
@@ -406,14 +443,16 @@ func writeCache(entries map[string]cacheEntry) {
 	os.Rename(tmp.Name(), p)
 }
 
-// scanAll returns meta and stat for each path, parsing in parallel and only
+type lineParserFunc func(line []byte, m *meta, whole bool)
+
+// scanPaths returns meta and stat for each path, parsing in parallel and only
 // what the cache does not already cover.
-func scanAll(paths []string) ([]meta, []os.FileInfo) {
-	cache := readCache()
+func scanPaths(paths []string, parseFn lineParserFunc, cache, next map[string]cacheEntry, mu *sync.Mutex) ([]meta, []os.FileInfo) {
 	metas := make([]meta, len(paths))
 	stats := make([]os.FileInfo, len(paths))
-	next := make(map[string]cacheEntry, len(paths))
-	var mu sync.Mutex
+	if len(paths) == 0 {
+		return metas, stats
+	}
 
 	jobs := make(chan int)
 	var wg sync.WaitGroup
@@ -423,6 +462,9 @@ func scanAll(paths []string) ([]meta, []os.FileInfo) {
 			defer wg.Done()
 			for i := range jobs {
 				p := paths[i]
+				if p == "" {
+					continue
+				}
 				fi, err := os.Stat(p)
 				if err != nil {
 					continue
@@ -432,9 +474,9 @@ func scanAll(paths []string) ([]meta, []os.FileInfo) {
 				case ok && c.Size == fi.Size() && c.ModTime == fi.ModTime().UnixNano():
 					// unchanged
 				case ok && fi.Size() > c.Offset && c.Offset > 0:
-					c.Meta, c.Offset = scan(p, c.Offset, c.Meta)
+					c.Meta, c.Offset = scan(p, c.Offset, c.Meta, parseFn)
 				default: // new, or rewritten shorter than we had read
-					c.Meta, c.Offset = scan(p, 0, meta{})
+					c.Meta, c.Offset = scan(p, 0, meta{}, parseFn)
 				}
 				c.Size, c.ModTime = fi.Size(), fi.ModTime().UnixNano()
 				metas[i], stats[i] = c.Meta, fi
@@ -449,7 +491,6 @@ func scanAll(paths []string) ([]meta, []os.FileInfo) {
 	}
 	close(jobs)
 	wg.Wait()
-	writeCache(next)
 	return metas, stats
 }
 
@@ -472,7 +513,7 @@ const chunk = 1 << 20
 // copied: the keys it looks for sit near the start of an entry, and the
 // entries it decodes are short. A last line without its newline is still
 // being written, so it is left for the next pass.
-func scan(path string, off int64, m meta) (meta, int64) {
+func scan(path string, off int64, m meta, parseFn lineParserFunc) (meta, int64) {
 	f, err := os.Open(path)
 	if err != nil {
 		return m, off
@@ -487,12 +528,12 @@ func scan(path string, off int64, m meta) (meta, int64) {
 		switch {
 		case err == nil:
 			m.Lines++
-			parseLine(line, &m, true)
+			parseFn(line, &m, true)
 			off += int64(len(line))
 		case errors.Is(err, bufio.ErrBufferFull):
 			// Read the head now, before the next ReadSlice reuses the buffer.
 			// Re-reading it after an EOF below only finds the same cwd again.
-			parseLine(line, &m, false)
+			parseFn(line, &m, false)
 			n := int64(len(line))
 			for errors.Is(err, bufio.ErrBufferFull) {
 				line, err = r.ReadSlice('\n')

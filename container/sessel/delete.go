@@ -27,6 +27,10 @@ type Artifact struct {
 // memory dir alone, and it cannot reach the Remote Control entries on
 // claude.ai.
 func (st *Store) Footprint(s *Session) []Artifact {
+	switch s.AgentName() {
+	case AgentCodex:
+		return codexFootprint(s)
+	}
 	tmpRoot := fmt.Sprintf("/tmp/claude-%d", os.Getuid())
 	candidates := []string{
 		s.File,
@@ -141,6 +145,9 @@ func Stop(s *Session) error {
 	if s.State == Dead {
 		return nil
 	}
+	if s.PID == 0 {
+		return fmt.Errorf("%s is busy (locked by %s with no known client pid)", s.UUID[:8], s.AgentName())
+	}
 	if !alive(s.PID, s.procStart) {
 		return nil // exited on its own since we looked
 	}
@@ -163,6 +170,13 @@ func (st *Store) Delete(s *Session) error {
 	if alive(s.PID, s.procStart) {
 		return fmt.Errorf("%s is still running, stop it first", s.UUID[:8])
 	}
+	if s.Locked && (s.PID == 0 || codexLockHeld(s.UUID)) {
+		return fmt.Errorf("%s is still locked by a running codex process", s.UUID[:8])
+	}
+	switch s.AgentName() {
+	case AgentCodex:
+		return deleteCodex(s)
+	}
 	var errs []error
 	for _, a := range st.Footprint(s) {
 		if err := os.RemoveAll(a.Path); err != nil {
@@ -172,15 +186,22 @@ func (st *Store) Delete(s *Session) error {
 	return errors.Join(errs...)
 }
 
-// Rename appends the entry Claude Code's own /rename writes. A running
-// session holds its title in memory and would write it back over this.
+// Rename sets a session's title. A running session holds its title in memory
+// and would write it back over this.
 func Rename(s *Session, title string) error {
 	title = strings.TrimSpace(title)
 	if title == "" {
 		return fmt.Errorf("empty title")
 	}
-	if alive(s.PID, s.procStart) {
-		return fmt.Errorf("%s is running and would overwrite this, use /rename inside it", s.UUID[:8])
+	if alive(s.PID, s.procStart) || s.Locked {
+		if s.AgentName() == AgentClaude {
+			return fmt.Errorf("%s is running and would overwrite this, use /rename inside it", s.UUID[:8])
+		}
+		return fmt.Errorf("%s is running and would overwrite this, rename it inside the session", s.UUID[:8])
+	}
+	switch s.AgentName() {
+	case AgentCodex:
+		return renameCodex(s, title)
 	}
 	entry, err := json.Marshal(struct {
 		Type        string `json:"type"`
@@ -257,7 +278,11 @@ func cmdRm(args []string) error {
 		files, bytes = files+f, bytes+b
 		fmt.Printf("%s  %s  (%s)\n", s.UUID, s.Title, stateWords(s))
 		for _, a := range arts {
-			fmt.Printf("    %-8s %4d files  %s\n", humanBytes(a.Bytes), a.Files, a.Path)
+			if a.Files == 0 {
+				fmt.Printf("    %-8s     sql row  %s\n", "-", a.Path)
+			} else {
+				fmt.Printf("    %-8s %4d files  %s\n", humanBytes(a.Bytes), a.Files, a.Path)
+			}
 		}
 		if s.State != Dead {
 			running = append(running, s)
@@ -267,6 +292,11 @@ func cmdRm(args []string) error {
 		len(sessions), files, humanBytes(bytes))
 	if *dry {
 		return nil
+	}
+	for _, s := range running {
+		if s.PID == 0 {
+			return Stop(s)
+		}
 	}
 	if !*force {
 		q := "Delete for good?"

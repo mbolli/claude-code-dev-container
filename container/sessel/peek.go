@@ -13,10 +13,10 @@ import (
 	"time"
 )
 
-// A turn is one line of the peek: something you typed, something Claude said,
-// or a tool call it made.
+// A turn is one line of the peek: something you typed, something the agent
+// said, or a tool call it made.
 type Turn struct {
-	Who  string // "you", "claude", "tool"
+	Who  string // "you", "claude", "codex", "agy", "tool"
 	Text string
 }
 
@@ -49,7 +49,7 @@ func cmdPeek(args []string) error {
 	if err != nil {
 		return err
 	}
-	turns, err := lastTurns(s.File, peekTurns)
+	turns, err := lastTurnsFor(s, peekTurns)
 	if err != nil {
 		return err
 	}
@@ -57,9 +57,21 @@ func cmdPeek(args []string) error {
 	return nil
 }
 
+func lastTurnsFor(s *Session, n int) ([]Turn, error) {
+	if s.File == "" || strings.HasSuffix(s.File, ".db") {
+		return nil, nil
+	}
+	switch s.AgentName() {
+	case AgentCodex:
+		return lastTurnsWith(s.File, n, codexTurnsOf)
+	default:
+		return lastTurnsWith(s.File, n, turnsOf)
+	}
+}
+
 // lastTurns keeps a rolling window of the last n turns. Oversized entries are
 // tool results, which the peek shows only as the call that produced them.
-func lastTurns(path string, n int) ([]Turn, error) {
+func lastTurnsWith(path string, n int, parseFn func([]byte) []Turn) ([]Turn, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -90,7 +102,7 @@ func lastTurns(path string, n int) ([]Turn, error) {
 			continue
 		}
 		if len(line) > 0 {
-			for _, t := range turnsOf(line) {
+			for _, t := range parseFn(line) {
 				push(t)
 			}
 		}
@@ -144,7 +156,7 @@ func turnsOf(line []byte) []Turn {
 
 // toolSummary is the call on one line: the tool and its most telling argument.
 func toolSummary(name string, in map[string]any) string {
-	for _, k := range []string{"command", "file_path", "pattern", "url", "query", "description", "prompt"} {
+	for _, k := range []string{"command", "CommandLine", "cmd", "file_path", "Path", "path", "pattern", "url", "query", "description", "prompt", "toolSummary"} {
 		if s, ok := in[k].(string); ok && s != "" {
 			return fmt.Sprintf("%s(%s)", name, oneLine(s, 90))
 		}
@@ -182,7 +194,8 @@ func renderPeek(s *Session, turns []Turn, width int, st style) string {
 	w := func(format string, a ...any) { fmt.Fprintf(&b, format, a...) }
 
 	w("%s\n", st.Heading(s.Title))
-	w("%s %s   %s %s   %s %s ago   %s %s\n",
+	w("%s %s   %s %s   %s %s   %s %s ago   %s %s\n",
+		st.Label("agent"), s.AgentName(),
 		st.Label("repo"), s.Repo(), st.Label("branch"), orDash(s.Branch),
 		st.Label("age"), age(s.Mtime), st.Label("state"), stateWords(s))
 	w("%s %s\n", st.Label("uuid"), s.UUID)
@@ -228,6 +241,9 @@ func stateWords(s *Session) string {
 	case LiveOutside:
 		if s.Spawner != "" {
 			return fmt.Sprintf("running headless under the %s spawner (pid %d)", spawnerName(s.Spawner), s.PID)
+		}
+		if s.PID == 0 {
+			return fmt.Sprintf("running outside tmux (locked by %s, pid unknown)", s.AgentName())
 		}
 		return fmt.Sprintf("running outside tmux (pid %d)", s.PID)
 	}
@@ -281,7 +297,7 @@ func renderStats(s *Session, arts []Artifact, width int, st style) string {
 	x := s.Stats
 
 	w("%s\n", st.Heading(s.Title))
-	row("repo", s.Repo()+"   "+st.Label("branch")+" "+orDash(s.Branch))
+	row("agent", s.AgentName()+"   "+st.Label("repo")+" "+s.Repo()+"   "+st.Label("branch")+" "+orDash(s.Branch))
 	row("state", stateWords(s))
 	row("uuid", s.UUID)
 	for i, br := range s.Bridges {
@@ -305,7 +321,7 @@ func renderStats(s *Session, arts []Artifact, width int, st style) string {
 
 	w("\n%s\n", st.Label("── length ──"))
 	row("your prompts", fmt.Sprint(x.Prompts))
-	row("Claude's turns", fmt.Sprint(x.Turns))
+	row(agentDisplayName(s.AgentName())+"'s turns", fmt.Sprint(x.Turns))
 	row("tool calls", fmt.Sprint(x.ToolCalls))
 	first, firstOK := parseTS(x.FirstAt)
 	last, lastOK := parseTS(x.LastAt)
@@ -340,6 +356,17 @@ func renderStats(s *Session, arts []Artifact, width int, st style) string {
 func parseTS(s string) (time.Time, bool) {
 	t, err := time.Parse(time.RFC3339Nano, s)
 	return t, err == nil
+}
+
+func agentDisplayName(agent string) string {
+	switch agent {
+	case AgentCodex:
+		return "Codex"
+	case AgentAgy:
+		return "agy"
+	default:
+		return "Claude"
+	}
 }
 
 func span(d time.Duration) string {
