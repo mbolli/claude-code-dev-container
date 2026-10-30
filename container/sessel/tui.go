@@ -180,7 +180,7 @@ func (m *model) refilter() {
 		if s.Scratch() && !m.showScratch {
 			continue
 		}
-		if q != "" && !strings.Contains(strings.ToLower(s.AgentName()+" "+s.Title+" "+s.Repo()+" "+s.Branch+" "+s.UUID+" "+strings.Join(s.Bridges, " ")), q) {
+		if q != "" && !strings.Contains(strings.ToLower(s.AgentName()+" "+s.Profile+" "+s.Title+" "+s.Repo()+" "+s.Branch+" "+s.UUID+" "+strings.Join(s.Bridges, " ")), q) {
 			continue
 		}
 		m.rows = append(m.rows, s)
@@ -272,7 +272,7 @@ func (m *model) setPeek() {
 		if a, ok := m.arts[s.UUID]; ok {
 			arts = a.arts
 		}
-		m.peek.SetContent(renderStatsBody(s, arts, width, tuiStyle{}))
+		m.peek.SetContent(renderStatsBody(s, arts, m.st.Clauth, width, tuiStyle{}))
 		if !same {
 			m.peek.GotoTop()
 		} else {
@@ -828,6 +828,37 @@ func shortAgentBadge(agent string) string {
 	}
 }
 
+func renderClauthPill(st *clauthStatus) string {
+	if st == nil {
+		return ""
+	}
+	var parts []string
+	for _, harness := range []string{AgentClaude, AgentCodex} {
+		for _, p := range st.Profiles {
+			if !p.Active || p.Harness != harness {
+				continue
+			}
+			badge := "cla"
+			name := p.Name
+			if harness == AgentCodex {
+				badge = "cdx"
+				name = strings.TrimPrefix(name, "codex-")
+			}
+			txt := badge + ":" + name
+			if w := clauthWindowSummary(p.Windows); w != "" {
+				txt += " " + w
+			}
+			if st.profileOverflowed(p) {
+				parts = append(parts, sBusy.Render(txt+" ↪"))
+			} else {
+				parts = append(parts, sDim.Render(txt))
+			}
+			break
+		}
+	}
+	return strings.Join(parts, sDim.Render(" · "))
+}
+
 func (m *model) viewListHeader(width int, repoW int) (string, string) {
 	total := len(m.st.Sessions)
 	shown := len(m.rows)
@@ -865,6 +896,15 @@ func (m *model) viewListHeader(width int, repoW int) (string, string) {
 		}
 		if liveCount > 0 {
 			right = sLive.Render(fmt.Sprintf("%d live", liveCount)) + " "
+		}
+		if cp := renderClauthPill(m.st.Clauth); cp != "" {
+			cand := cp + " "
+			if right != "" {
+				cand = cp + sDim.Render(" · ") + right
+			}
+			if ansi.StringWidth(left)+ansi.StringWidth(cand)+2 <= width {
+				right = cand
+			}
 		}
 	}
 	gap := max(1, width-ansi.StringWidth(left)-ansi.StringWidth(right))

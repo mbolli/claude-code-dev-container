@@ -29,6 +29,48 @@ func codexHome() string {
 	return filepath.Join(home, ".codex")
 }
 
+type codexHomeSpec struct {
+	Home    string
+	Profile string
+}
+
+// codexHomes returns ~/.codex plus any ~/.clauth/profiles/<name>/codex-home
+// directories created by `clauth start <codex-profile>`.
+func codexHomes() []codexHomeSpec {
+	primary := codexHome()
+	out := []codexHomeSpec{{Home: primary}}
+	dirs, _ := filepath.Glob(filepath.Join(clauthHome(), "profiles", "*", "codex-home"))
+	for _, d := range dirs {
+		if filepath.Clean(d) == filepath.Clean(primary) {
+			continue
+		}
+		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
+			out = append(out, codexHomeSpec{
+				Home:    d,
+				Profile: filepath.Base(filepath.Dir(d)),
+			})
+		}
+	}
+	return out
+}
+
+func codexHomeFor(s *Session) string {
+	if s != nil {
+		for _, h := range codexHomes() {
+			if s.File != "" && within(s.File, h.Home) {
+				return h.Home
+			}
+		}
+		if s.Profile != "" {
+			dir := filepath.Join(clauthHome(), "profiles", s.Profile, "codex-home")
+			if fileExists(codexStateDB(dir)) {
+				return dir
+			}
+		}
+	}
+	return codexHome()
+}
+
 // codexStateDB locates state_5.sqlite, falling back to the highest-numbered
 // state_*.sqlite if a newer schema migration bumped the filename.
 func codexStateDB(home string) string {
@@ -59,10 +101,9 @@ type codexThreadRow struct {
 }
 
 // loadCodexSessions reads non-archived top-level threads from state_5.sqlite
-// and merges them with cached rollout transcript stats.
+// across ~/.codex and per-profile clauth codex-homes, merging them with cached
+// rollout transcript stats.
 func loadCodexSessions(cache, next map[string]cacheEntry, mu *sync.Mutex) []*Session {
-	home := codexHome()
-	db := codexStateDB(home)
 	const q = `SELECT
 		id,
 		COALESCE(rollout_path, '') AS rollout_path,
@@ -79,8 +120,28 @@ func loadCodexSessions(cache, next map[string]cacheEntry, mu *sync.Mutex) []*Ses
 	WHERE archived = 0
 	  AND COALESCE(attached_thread_parent_id, '') = '';`
 
-	rows, err := sqliteQueryJSON[codexThreadRow](db, q)
-	if err != nil || len(rows) == 0 {
+	var rows []codexThreadRow
+	var rowProfiles []string
+	seen := map[string]bool{}
+	for _, h := range codexHomes() {
+		db := codexStateDB(h.Home)
+		if !fileExists(db) {
+			continue
+		}
+		rs, err := sqliteQueryJSON[codexThreadRow](db, q)
+		if err != nil {
+			continue
+		}
+		for _, r := range rs {
+			if seen[r.ID] {
+				continue
+			}
+			seen[r.ID] = true
+			rows = append(rows, r)
+			rowProfiles = append(rowProfiles, h.Profile)
+		}
+	}
+	if len(rows) == 0 {
 		return nil
 	}
 
@@ -133,6 +194,7 @@ func loadCodexSessions(cache, next map[string]cacheEntry, mu *sync.Mutex) []*Ses
 		s := &Session{
 			UUID:        r.ID,
 			Agent:       AgentCodex,
+			Profile:     rowProfiles[i],
 			File:        r.RolloutPath,
 			Cwd:         cwd,
 			Branch:      branch,
@@ -178,7 +240,7 @@ func attachCodexLive(sessions []*Session, procs []agentProc) {
 	if len(sessions) == 0 {
 		return
 	}
-	home := codexHome()
+	homes := codexHomes()
 	byUUID := make(map[string]*Session, len(sessions))
 	byPrefix := make(map[string]*Session, len(sessions))
 	byRollout := make(map[string]string, len(sessions))
@@ -201,7 +263,7 @@ func attachCodexLive(sessions []*Session, procs []agentProc) {
 		}
 		open := map[string]bool{}
 		for _, target := range p.fds {
-			id, isLock := codexUUIDFromFD(target, home, byRollout)
+			id, isLock := codexUUIDFromFD(target, homes, byRollout)
 			if id == "" {
 				continue
 			}
@@ -296,8 +358,15 @@ func attachCodexLive(sessions []*Session, procs []agentProc) {
 }
 
 // codexUUIDFromFD extracts a thread UUID from an open lock or rollout path.
-func codexUUIDFromFD(target, home string, byRollout map[string]string) (uuid string, isLock bool) {
-	if !within(target, home) {
+func codexUUIDFromFD(target string, homes []codexHomeSpec, byRollout map[string]string) (uuid string, isLock bool) {
+	inHome := false
+	for _, h := range homes {
+		if within(target, h.Home) {
+			inHome = true
+			break
+		}
+	}
+	if !inHome {
 		return "", false
 	}
 	if strings.Contains(target, "/thread-writer-locks/") && strings.HasSuffix(target, ".lock") {
@@ -318,14 +387,16 @@ func codexLockHeld(uuid string) bool {
 	if !uuidRe.MatchString(uuid) {
 		return false
 	}
-	home := codexHome()
-	want := filepath.Join(home, "thread-writer-locks", uuid+".lock")
+	wants := map[string]bool{}
+	for _, h := range codexHomes() {
+		wants[filepath.Clean(filepath.Join(h.Home, "thread-writer-locks", uuid+".lock"))] = true
+	}
 	for _, p := range scanAgentProcs(tmuxPanes{}) {
 		if p.comm != "codex" {
 			continue
 		}
 		for _, fd := range p.fds {
-			if filepath.Clean(fd) == filepath.Clean(want) {
+			if wants[filepath.Clean(fd)] {
 				return true
 			}
 		}
@@ -635,7 +706,7 @@ func codexFootprint(s *Session) []Artifact {
 	if !uuidRe.MatchString(s.UUID) {
 		return nil
 	}
-	home := codexHome()
+	home := codexHomeFor(s)
 	candidates := []string{
 		s.File,
 		filepath.Join(home, "tui-thread-reference-capabilities", s.UUID),
@@ -677,14 +748,16 @@ func deleteCodex(s *Session) error {
 	if !uuidRe.MatchString(s.UUID) {
 		return fmt.Errorf("invalid codex session id: %q", s.UUID)
 	}
+	home := codexHomeFor(s)
 	if path, err := exec.LookPath(codexBin); err == nil {
-		out, err := exec.Command(path, "delete", "--force", s.UUID).CombinedOutput()
+		cmd := exec.Command(path, "delete", "--force", s.UUID)
+		cmd.Env = append(os.Environ(), "CODEX_HOME="+home)
+		out, err := cmd.CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("codex delete %s: %s", s.UUID[:8], strings.TrimSpace(string(out)))
 		}
 		return nil
 	}
-	home := codexHome()
 	for _, a := range codexFootprint(s) {
 		if a.Files == 0 {
 			continue
@@ -718,7 +791,7 @@ func deleteCodex(s *Session) error {
 
 // renameCodex sets the user-assigned name column on the thread in state_5.sqlite.
 func renameCodex(s *Session, title string) error {
-	db := codexStateDB(codexHome())
+	db := codexStateDB(codexHomeFor(s))
 	sql := fmt.Sprintf("UPDATE threads SET name = %s WHERE id = %s;", sqlQuote(title), sqlQuote(s.UUID))
 	return sqliteExec(db, sql)
 }

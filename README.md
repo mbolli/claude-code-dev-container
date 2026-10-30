@@ -114,6 +114,7 @@ pins. Only the three `ARG` lines at the top of the `Dockerfile` are pinned.
 | claude | updates itself | Installed by `entrypoint.sh` into the persisted home, not into the image |
 | codex | updates itself | Same as claude. Logged in with ChatGPT |
 | agy | updates itself | Antigravity CLI, same as claude. Logged in with Google AI Pro; token in `~/.gemini/antigravity-cli/`, no keyring needed |
+| clauth | 0.18.0 | Multi-account pool and private->work quota fallback for Claude and Codex (`~/.clauth`) |
 | bubblewrap | apt | The sandbox Codex and agy run commands in |
 | git | 2.55.0 | |
 | gh | 2.46.0 | Used by `devclone` |
@@ -217,6 +218,7 @@ subdirectories).
 | `devclone <owner/repo>` | Clone from GitHub into `/develop` and trust it |
 | `devlink` | Print the claude.ai/code environment URL, with QR and clipboard |
 | `sessel [cmd]` | Browse, peek, resume and delete sessions (see below) |
+| `clauth [cmd]` | Manage Claude and Codex accounts and fallback chains on tower (forwards OAuth callback ports) |
 | `devwork <repo>` | Start or reattach a session for a repo, under tmux |
 | `devls [-a] [-agent ...]` | List sessions with titles; either id in it works for `devresume` |
 | `devstatus` | Container status and Remote Control state |
@@ -345,3 +347,39 @@ Tunables, as environment variables read by the entrypoint:
 | `REBIND_POINTERS` | `1` | Use the pointer snapshot |
 
 `cat /tmp/rebind.log` in the container shows the last run.
+
+## Multi-account pools (`clauth`)
+
+[clauth](https://github.com/uwuclxdy/clauth) manages multiple Claude Code and
+Codex subscriptions in `~/.clauth/` and runs as a background daemon (`tmux`
+session `clauth`, started by `entrypoint.sh`).
+
+Both harnesses are configured to use the private plan first and automatically
+overflow into the work plan only when the private plan's usage window is
+exhausted:
+
+- **Claude Code** (`~/.clauth/profiles.toml`): `fallback_chain = ["private", "work"]`.
+  `private` has `preferred = true` and `check_weekly = false` (drains to 95% on
+  the 5h window or 100% on the 7d window before switching `~/.claude/.credentials.json`
+  in place to `work`, where `last_resort = true`). Live Claude sessions pick up
+  the rotated credentials on their next turn without restarting, and `clauth`
+  walks back to `private` automatically as soon as its window resets.
+- **Codex** (`~/.clauth/codex-profiles.toml`): `fallback_chain = ["codex-private", "codex-work"]`.
+  When `codex-private` reaches 95% (5h) or 98% (7d), `clauth` switches
+  `~/.codex/auth.json` to `codex-work`. Once `codex-private`'s window resets
+  below 90%, `sessel upgrade` switches Codex back to `codex-private`.
+
+Log in or inspect accounts from the workstation (the `clauth` fish wrapper
+forwards localhost ports `1455` and `1457` so browser OAuth callbacks land
+inside the container):
+
+```sh
+clauth login work                        # add or refresh the work Claude account
+clauth login codex-work --codex --browser # add or refresh the work Codex account
+clauth list                              # check active profiles and 5h/7d usage windows
+clauth                                   # interactive account and usage TUI
+```
+
+`sessel` shows the active `clauth` profiles and window percentages in the
+session list header (highlighting overflowed accounts with `↪`) and lists all
+configured profiles and reset timers in the `s` stats pane.

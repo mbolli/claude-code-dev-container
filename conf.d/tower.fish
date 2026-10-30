@@ -134,12 +134,23 @@ function devrc --description "Attach to the Remote Control tmux session (detach:
     ssh -t tower-dev 'LANG=C.UTF-8 tmux -u attach -t rc'
 end
 
-function devstatus --description "Show develop container status and Remote Control state"
-    ssh -n tower 'docker ps --filter name=claude-code --format "{{.Names}}  {{.Status}}"
+function devstatus --description "Show develop container status, accounts and Remote Control state"
+    ssh -n tower 'docker ps --filter name=claude-code --format "{{.Names}}  {{.Status}}"'
+    echo
+    __dev_ssh 'for w in $(tmux list-windows -t rc -F "#{window_index}" 2>/dev/null); do
+        tmux capture-pane -p -J -t rc:$w 2>/dev/null
+    done | grep -E "Ready|Capacity|claude\.ai/code|Session completed" | tail -6
+    if command -v clauth >/dev/null 2>&1; then
         echo
-        docker exec -u dev claude-code sh -c '\''for w in $(tmux list-windows -t rc -F "#{window_index}" 2>/dev/null); do
-            tmux capture-pane -p -J -t rc:$w 2>/dev/null
-        done'\'' | grep -E "Ready|Capacity|claude\.ai/code|Session completed" | tail -6'
+        clauth list
+    fi'
+end
+
+function clauth --description "Manage Claude and Codex accounts and fallback chains on tower"
+    # Forward the Codex (1455) and Claude (1457) localhost OAuth callback ports
+    # so browser login from the workstation lands straight in the container.
+    set -l a (string escape -- $argv | string join ' ')
+    ssh -t -o ExitOnForwardFailure=no -L 1455:127.0.0.1:1455 -L 1457:127.0.0.1:1457 tower-dev "LANG=C.UTF-8 clauth $a"
 end
 
 function devrestart --description "Restart the develop container (Remote Control reconnects itself)"

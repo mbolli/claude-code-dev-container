@@ -148,6 +148,10 @@ func cmdUpgrade(args []string) error {
 	noFetch := fl.Bool("no-update", false, "skip `claude update`")
 	fl.Parse(args)
 
+	if err := reconcileCodexPreferred(*dry); err != nil {
+		fmt.Fprintf(os.Stderr, "sessel: %v\n", err)
+	}
+
 	if !*noFetch && !*dry {
 		if out, err := exec.Command("claude", "update").CombinedOutput(); err != nil {
 			fmt.Fprintf(os.Stderr, "sessel: claude update: %s\n", strings.TrimSpace(string(out)))

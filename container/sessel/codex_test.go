@@ -388,3 +388,155 @@ func TestTitleCompactionAndToolCollapse(t *testing.T) {
 		t.Errorf("collapsed = %+v", collapsed)
 	}
 }
+
+func TestClauthIntegrationAndCodexReturnToPreferred(t *testing.T) {
+	tmp := t.TempDir()
+	clauthDir := filepath.Join(tmp, "clauth")
+	if err := os.MkdirAll(filepath.Join(clauthDir, "conversations"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUTH_HOME", clauthDir)
+	t.Setenv("CODEX_HOME", filepath.Join(tmp, "codex-main"))
+	t.Setenv("CLAUDE_HOME", filepath.Join(tmp, "claude"))
+	t.Setenv("AGY_HOME", filepath.Join(tmp, "empty-agy"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(tmp, "cache"))
+
+	origClauth := clauthBin
+	t.Cleanup(func() { clauthBin = origClauth })
+
+	uClaude := "11111111-1111-4111-8111-111111111111"
+	uCodex := "22222222-2222-4222-8222-222222222222"
+
+	// Create a Claude transcript attributed to "work" in session_profiles.json.
+	claudeProj := filepath.Join(tmp, "claude", "projects", "-develop-trips")
+	if err := os.MkdirAll(claudeProj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	claudeFile := filepath.Join(claudeProj, uClaude+".jsonl")
+	if err := os.WriteFile(claudeFile, []byte(`{"type":"user","cwd":"/develop/trips","message":{"content":"hello"}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clauthDir, "session_profiles.json"), []byte(`{"`+uClaude+`":"work"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a per-profile codex-home under ~/.clauth/profiles/codex-work/codex-home.
+	workCodexHome := filepath.Join(clauthDir, "profiles", "codex-work", "codex-home")
+	if err := os.MkdirAll(workCodexHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	db := filepath.Join(workCodexHome, "state_5.sqlite")
+	schema := `CREATE TABLE threads (
+		id TEXT PRIMARY KEY,
+		rollout_path TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL,
+		cwd TEXT NOT NULL,
+		title TEXT NOT NULL,
+		name TEXT,
+		first_user_message TEXT NOT NULL DEFAULT '',
+		model TEXT,
+		tokens_used INTEGER NOT NULL DEFAULT 0,
+		git_branch TEXT,
+		archived INTEGER NOT NULL DEFAULT 0,
+		attached_thread_parent_id TEXT
+	);`
+	if err := sqliteExec(db, schema); err != nil {
+		t.Fatal(err)
+	}
+	rollout := filepath.Join(workCodexHome, "rollout-"+uCodex+".jsonl")
+	if err := os.WriteFile(rollout, []byte(`{"type":"session_meta","payload":{"cwd":"/develop/trips"}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	insert := `INSERT INTO threads (id, rollout_path, created_at, updated_at, cwd, title, first_user_message, model, git_branch)
+		VALUES ('` + uCodex + `', '` + rollout + `', 1793341632, 1793341635, '/develop/trips', 'Work codex task', 'Do work', 'gpt-6-luna', 'main');`
+	if err := sqliteExec(db, insert); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write status.json showing Codex currently overflowed onto codex-work while codex-private is clear (0%).
+	statusJSON := `{
+		"schema": 2,
+		"active_profile": "work",
+		"active_codex_profile": "codex-work",
+		"codex_fallback_chain": ["codex-private", "codex-work"],
+		"profiles": [
+			{
+				"name": "private",
+				"active": false,
+				"tier": "Max 20x",
+				"harness": "claude",
+				"auth_status": "ok",
+				"fetch_status": "Fresh",
+				"fallback": {"position": 1, "threshold": 95.0, "armed": true},
+				"windows": [{"label": "5h", "utilization_pct": 96.0}, {"label": "7d", "utilization_pct": 98.0}]
+			},
+			{
+				"name": "work",
+				"active": true,
+				"tier": "Team",
+				"harness": "claude",
+				"auth_status": "ok",
+				"fetch_status": "Fresh",
+				"fallback": {"position": 2, "threshold": 95.0, "armed": true},
+				"windows": [{"label": "5h", "utilization_pct": 12.0}]
+			},
+			{
+				"name": "codex-private",
+				"active": false,
+				"tier": "Plus",
+				"harness": "codex",
+				"auth_status": "ok",
+				"fetch_status": "Fresh",
+				"windows": [{"label": "7d", "utilization_pct": 10.0}]
+			},
+			{
+				"name": "codex-work",
+				"active": true,
+				"tier": "Pro",
+				"harness": "codex",
+				"auth_status": "ok",
+				"fetch_status": "Fresh",
+				"windows": [{"label": "7d", "utilization_pct": 25.0}]
+			}
+		]
+	}`
+	if err := os.WriteFile(filepath.Join(clauthDir, "status.json"), []byte(statusJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	sc := st.Get(uClaude)
+	if sc == nil || sc.Profile != "work" {
+		t.Fatalf("claude session profile = %+v, want work", sc)
+	}
+	sx := st.Get(uCodex)
+	if sx == nil || sx.Profile != "codex-work" {
+		t.Fatalf("codex session profile = %+v, want codex-work", sx)
+	}
+	if gotHome := codexHomeFor(sx); gotHome != workCodexHome {
+		t.Errorf("codexHomeFor(sx) = %q, want %q", gotHome, workCodexHome)
+	}
+	pill := renderClauthPill(st.Clauth)
+	if !strings.Contains(pill, "cla:work 12% ↪") || !strings.Contains(pill, "cdx:work 25% ↪") {
+		t.Errorf("renderClauthPill = %q, want overflow indicators", pill)
+	}
+
+	// Test reconcileCodexPreferred switches back to codex-private since its 7d window is 10% (< 90%).
+	marker := filepath.Join(tmp, "switched")
+	fakeClauth := filepath.Join(tmp, "fake-clauth")
+	if err := os.WriteFile(fakeClauth, []byte("#!/bin/sh\nprintf '%s' \"$*\" > "+marker+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	clauthBin = fakeClauth
+	if err := reconcileCodexPreferred(false); err != nil {
+		t.Fatalf("reconcileCodexPreferred: %v", err)
+	}
+	switched, err := os.ReadFile(marker)
+	if err != nil || string(switched) != "switch codex-private" {
+		t.Errorf("expected clauth switch codex-private, got %q (err=%v)", string(switched), err)
+	}
+}

@@ -116,6 +116,9 @@ func ResumeDetached(s *Session) (string, error) {
 	switch s.AgentName() {
 	case AgentCodex:
 		name := tmuxName(s.Cwd) + "@codex-" + s.UUID[:8]
+		if s.Profile != "" && filepath.Clean(codexHomeFor(s)) != filepath.Clean(codexHome()) {
+			return name, ensureSession(name, s.Cwd, clauthBin, "start", s.Profile, "--", "resume", s.UUID)
+		}
 		return name, ensureSession(name, s.Cwd, "codex", "resume", s.UUID)
 	case AgentAgy:
 		name := tmuxName(s.Cwd) + "@agy-" + s.UUID[:8]

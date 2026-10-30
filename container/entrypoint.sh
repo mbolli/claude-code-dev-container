@@ -50,6 +50,10 @@ if [ ! -x "$HOME_DIR/.local/bin/agy" ]; then
   su dev -c 'curl -fsSL https://antigravity.google/cli/install.sh | bash' \
     || echo "entrypoint: agy install failed, continuing" >&2
 fi
+if [ ! -x "$HOME_DIR/.local/bin/clauth" ]; then
+  su dev -c 'curl -fsSL https://raw.githubusercontent.com/uwuclxdy/clauth/mommy/install.sh | bash -s -- --nocargo' \
+    || echo "entrypoint: clauth install failed, continuing" >&2
+fi
 
 # Pre-accept the workspace trust dialog for everything under $WORKDIR. Claude
 # does not inherit trust across a repository root, so the ~45 clones in there
@@ -109,6 +113,10 @@ chown 99:100 "$REGISTRY_LIST" 2>/dev/null || true
 # after a later /login. Wait for the login first, in the background so sshd and
 # the shell stay usable for running /login. Progress lands in /tmp/login.log.
 start_remote_control() {
+# Account pool and private->work fallback daemon for Claude and Codex.
+su dev -c "tmux new-session -d -s clauth \
+  'while :; do clauth daemon; sleep 5; done'" || true
+
 # Remote Control under tmux so it survives docker exec sessions detaching.
 #
 # same-dir, not worktree: $WORKDIR holds many repos and is not itself a git

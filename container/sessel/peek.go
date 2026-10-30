@@ -228,9 +228,13 @@ func renderHeader(s *Session, width int, st style) string {
 	var b strings.Builder
 	w := func(format string, a ...any) { fmt.Fprintf(&b, format, a...) }
 
+	ag := s.AgentName()
+	if s.Profile != "" {
+		ag += " (" + s.Profile + ")"
+	}
 	w("%s\n", st.Heading(oneLine(s.Title, max(20, width))))
 	w("%s %s   %s %s   %s %s   %s %s ago   %s %s\n",
-		st.Label("agent"), s.AgentName(),
+		st.Label("agent"), ag,
 		st.Label("repo"), s.Repo(), st.Label("branch"), orDash(s.Branch),
 		st.Label("age"), age(s.Mtime), st.Label("state"), stateWords(s))
 	w("%s %s\n", st.Label("uuid"), s.UUID)
@@ -346,7 +350,7 @@ func wrap(s string, width, maxLines int) string {
 
 // renderStatsBody is the scrollable body of the stats view when the session
 // header is pinned above the viewport.
-func renderStatsBody(s *Session, arts []Artifact, width int, st style) string {
+func renderStatsBody(s *Session, arts []Artifact, clauth *clauthStatus, width int, st style) string {
 	var b strings.Builder
 	w := func(format string, a ...any) { fmt.Fprintf(&b, format, a...) }
 	row := func(k, v string) { w("%s %s\n", st.Label(fmt.Sprintf("%-17s", k)), v) }
@@ -388,6 +392,32 @@ func renderStatsBody(s *Session, arts []Artifact, width int, st style) string {
 		row("models", strings.Join(x.Models, ", "))
 	}
 
+	if clauth != nil && (s.AgentName() == AgentClaude || s.AgentName() == AgentCodex) {
+		var profs []clauthProfile
+		for _, p := range clauth.Profiles {
+			if p.Harness == s.AgentName() {
+				profs = append(profs, p)
+			}
+		}
+		if len(profs) > 0 {
+			w("\n%s\n", st.Label("── accounts (clauth) ──"))
+			for _, p := range profs {
+				role := "standby"
+				if p.Active {
+					role = "active"
+					if clauth.profileOverflowed(p) {
+						role = "active (overflow)"
+					}
+				}
+				tier := p.Tier
+				if tier != "" {
+					role += ", " + tier
+				}
+				row(p.Name, role+" · "+clauthWindowDetail(p.Windows))
+			}
+		}
+	}
+
 	if len(s.Bridges) > 1 {
 		w("\n%s\n", st.Label("── phone ids ──"))
 		for i, br := range s.Bridges {
@@ -409,7 +439,7 @@ func renderStatsBody(s *Session, arts []Artifact, width int, st style) string {
 }
 
 func renderStats(s *Session, arts []Artifact, width int, st style) string {
-	return renderHeader(s, width, st) + "\n\n" + renderStatsBody(s, arts, width, st)
+	return renderHeader(s, width, st) + "\n\n" + renderStatsBody(s, arts, loadClauthStatus(), width, st)
 }
 
 func parseTS(s string) (time.Time, bool) {

@@ -90,6 +90,7 @@ func validAgent(a string) bool {
 type Session struct {
 	UUID        string    `json:"uuid"`
 	Agent       string    `json:"agent"`
+	Profile     string    `json:"profile,omitempty"`
 	File        string    `json:"file"`
 	Project     string    `json:"project"`
 	Cwd         string    `json:"cwd"`
@@ -146,6 +147,7 @@ func (s *Session) Scratch() bool { return strings.HasPrefix(s.Cwd, "/tmp") }
 type Store struct {
 	Home     string // ~/.claude
 	Sessions []*Session
+	Clauth   *clauthStatus
 	byUUID   map[string]*Session
 	registry map[string][]regRecord // uuid -> records, newest first
 }
@@ -172,8 +174,9 @@ func claudeHome() string {
 }
 
 func Load() (*Store, error) {
-	st := &Store{Home: claudeHome(), byUUID: map[string]*Session{}, registry: map[string][]regRecord{}}
+	st := &Store{Home: claudeHome(), Clauth: loadClauthStatus(), byUUID: map[string]*Session{}, registry: map[string][]regRecord{}}
 	st.loadRegistry()
+	profMap := loadClauthSessionProfiles(st.Clauth)
 
 	cache := readCache()
 	next := map[string]cacheEntry{}
@@ -192,6 +195,7 @@ func Load() (*Store, error) {
 			continue
 		}
 		s := st.session(p, stats[i], metas[i])
+		s.Profile = profMap[s.UUID]
 		st.Sessions = append(st.Sessions, s)
 		st.byUUID[s.UUID] = s
 	}
@@ -204,6 +208,9 @@ func Load() (*Store, error) {
 		attachAgyLive(agySessions, agyBusy, procs)
 	}
 	for _, s := range codexSessions {
+		if s.Profile == "" {
+			s.Profile = profMap[s.UUID]
+		}
 		if st.byUUID[s.UUID] == nil {
 			st.Sessions = append(st.Sessions, s)
 			st.byUUID[s.UUID] = s
