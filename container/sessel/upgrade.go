@@ -98,23 +98,23 @@ func claudeIn(panePID int) int {
 }
 
 type pane struct {
-	ID, Session, Window, Path, Start string
-	PID                              int
+	ID, Session, Window, WindowID, Path, Start string
+	PID                                        int
 }
 
 func panes() []pane {
-	b, err := tmuxCmd("list-panes", "-a", "-F", "#{pane_id}\t#{session_name}\t#{window_name}\t#{pane_current_path}\t#{pane_pid}\t#{pane_start_command}").Output()
+	b, err := tmuxCmd("list-panes", "-a", "-F", "#{pane_id}\t#{session_name}\t#{window_name}\t#{window_id}\t#{pane_current_path}\t#{pane_pid}\t#{pane_start_command}").Output()
 	if err != nil {
 		return nil
 	}
 	var out []pane
 	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
-		f := strings.SplitN(line, "\t", 6)
-		if len(f) < 6 {
+		f := strings.SplitN(line, "\t", 7)
+		if len(f) < 7 {
 			continue
 		}
-		pid, _ := strconv.Atoi(f[4])
-		out = append(out, pane{f[0], f[1], f[2], f[3], f[5], pid})
+		pid, _ := strconv.Atoi(f[5])
+		out = append(out, pane{f[0], f[1], f[2], f[3], f[4], f[6], pid})
 	}
 	return out
 }
