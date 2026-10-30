@@ -197,11 +197,19 @@ func Load() (*Store, error) {
 	}
 
 	codexSessions := loadCodexSessions(cache, next, &mu)
-	if len(codexSessions) > 0 {
+	agySessions, agyBusy := loadAgySessions(cache, next, &mu)
+	if len(codexSessions) > 0 || len(agySessions) > 0 {
 		procs := scanAgentProcs(loadTmuxPanes())
 		attachCodexLive(codexSessions, procs)
+		attachAgyLive(agySessions, agyBusy, procs)
 	}
 	for _, s := range codexSessions {
+		if st.byUUID[s.UUID] == nil {
+			st.Sessions = append(st.Sessions, s)
+			st.byUUID[s.UUID] = s
+		}
+	}
+	for _, s := range agySessions {
 		if st.byUUID[s.UUID] == nil {
 			st.Sessions = append(st.Sessions, s)
 			st.byUUID[s.UUID] = s

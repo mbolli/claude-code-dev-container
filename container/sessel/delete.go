@@ -30,6 +30,8 @@ func (st *Store) Footprint(s *Session) []Artifact {
 	switch s.AgentName() {
 	case AgentCodex:
 		return codexFootprint(s)
+	case AgentAgy:
+		return agyFootprint(s)
 	}
 	tmpRoot := fmt.Sprintf("/tmp/claude-%d", os.Getuid())
 	candidates := []string{
@@ -176,6 +178,8 @@ func (st *Store) Delete(s *Session) error {
 	switch s.AgentName() {
 	case AgentCodex:
 		return deleteCodex(s)
+	case AgentAgy:
+		return deleteAgy(s)
 	}
 	var errs []error
 	for _, a := range st.Footprint(s) {
@@ -202,6 +206,8 @@ func Rename(s *Session, title string) error {
 	switch s.AgentName() {
 	case AgentCodex:
 		return renameCodex(s, title)
+	case AgentAgy:
+		return renameAgy(s, title)
 	}
 	entry, err := json.Marshal(struct {
 		Type        string `json:"type"`

@@ -64,6 +64,8 @@ func lastTurnsFor(s *Session, n int) ([]Turn, error) {
 	switch s.AgentName() {
 	case AgentCodex:
 		return lastTurnsWith(s.File, n, codexTurnsOf)
+	case AgentAgy:
+		return lastTurnsWith(s.File, n, agyTurnsOf)
 	default:
 		return lastTurnsWith(s.File, n, turnsOf)
 	}
