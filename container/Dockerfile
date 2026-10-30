@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl wget git gh tmux openssh-server openssh-client less jq \
       procps sudo xz-utils unzip zip build-essential pkg-config \
       ripgrep fd-find bat shellcheck sqlite3 mariadb-client mdbook rsync imagemagick ffmpeg \
+      bubblewrap \
       docker-cli docker-compose docker-buildx \
       brotli ncurses-term \
       libheif-plugin-aomenc libheif-plugin-svtenc \

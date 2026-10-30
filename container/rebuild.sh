@@ -17,10 +17,13 @@ docker build -t claude-code:local .
 docker stop claude-code 2>/dev/null || true
 docker rm   claude-code 2>/dev/null || true
 
+# seccomp=unconfined: the default profile blocks user namespaces, which the Codex
+# and agy sandboxes need. The mounted docker socket already outweighs it.
 docker run -d \
   --name claude-code \
   --restart unless-stopped \
   --memory=36g --memory-swap=36g \
+  --security-opt seccomp=unconfined \
   -p 2222:22 \
   -v /mnt/user/appdata/claude-code/home:/home/dev \
   -v /mnt/user/develop:/develop \

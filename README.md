@@ -40,7 +40,7 @@ script instead.
 | Path | Purpose |
 | --- | --- |
 | `Dockerfile` | Debian sid base plus the toolchain |
-| `entrypoint.sh` | sshd, Claude install, Remote Control host, session rebind |
+| `entrypoint.sh` | sshd, Claude, Codex and agy install, Remote Control host, session rebind |
 | `trust-develop.sh` | Pre-accepts the workspace trust dialog for every repo |
 | `rebind-sessions.sh` | Restores the previous run's Claude sessions on start |
 | `wait-for-login.sh` | Holds Remote Control back until Claude can make an API call |
@@ -53,7 +53,7 @@ Only two volumes survive a rebuild:
 
 | Volume | Holds |
 | --- | --- |
-| `/home/dev` | Claude's own install, credentials, session history, shell profile |
+| `/home/dev` | Claude, Codex and agy installs, credentials, session history, shell profile |
 | `/develop` | Your repos |
 
 Anything installed into the image filesystem at runtime is discarded. Put it in
@@ -112,6 +112,9 @@ pins. Only the three `ARG` lines at the top of the `Dockerfile` are pinned.
 | | Version | Why |
 | --- | --- | --- |
 | claude | updates itself | Installed by `entrypoint.sh` into the persisted home, not into the image |
+| codex | updates itself | Same as claude. Logged in with ChatGPT |
+| agy | updates itself | Antigravity CLI, same as claude. Logged in with Google AI Pro; token in `~/.gemini/antigravity-cli/`, no keyring needed |
+| bubblewrap | apt | The sandbox Codex and agy run commands in |
 | git | 2.55.0 | |
 | gh | 2.46.0 | Used by `devclone` |
 | tmux | 3.7c | Holds the Remote Control host and rebound sessions |
@@ -128,9 +131,15 @@ pins. Only the three `ARG` lines at the top of the `Dockerfile` are pinned.
 Both `fd` and `bat` are symlinked into `/usr/local/bin` because Debian ships
 them as `fdfind` and `batcat` to avoid name clashes.
 
-### Two container gotchas worth knowing
+### Container gotchas worth knowing
 
-Both are already handled, and both cost real debugging time to find:
+All are already handled, and all cost real debugging time to find:
+
+**Codex and agy need `seccomp=unconfined`.** Their auto modes run commands in a
+bubblewrap sandbox, which needs unprivileged user namespaces. Docker's default
+seccomp profile blocks those, and bwrap fails with "No permissions to create a
+new namespace". `rebuild.sh` turns the profile off. The mounted docker socket is
+root on the host anyway, so the profile protected little.
 
 **`pam_loginuid` makes SSH silently do nothing.** sshd in a container cannot
 write `/proc/self/loginuid`. PAM runs the rest of the stack, the MOTD even

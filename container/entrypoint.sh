@@ -41,6 +41,16 @@ if [ ! -x "$HOME_DIR/.local/bin/claude" ]; then
     || echo "entrypoint: claude install failed, continuing" >&2
 fi
 
+# Codex and the Antigravity CLI the same way: into ~/.local/bin, self-updating.
+if [ ! -x "$HOME_DIR/.local/bin/codex" ]; then
+  su dev -c 'curl -fsSL https://chatgpt.com/codex/install.sh | sh' \
+    || echo "entrypoint: codex install failed, continuing" >&2
+fi
+if [ ! -x "$HOME_DIR/.local/bin/agy" ]; then
+  su dev -c 'curl -fsSL https://antigravity.google/cli/install.sh | bash' \
+    || echo "entrypoint: agy install failed, continuing" >&2
+fi
+
 # Pre-accept the workspace trust dialog for everything under $WORKDIR. Claude
 # does not inherit trust across a repository root, so the ~45 clones in there
 # each need their own entry; see the script for the details.
