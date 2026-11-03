@@ -137,8 +137,8 @@ su dev -c "while sleep 3600; do sessel serve; sessel upgrade; done" >>/tmp/serve
 # nothing else should block on it. See rebind-sessions.sh for the reasoning.
 su dev -c "cd $WORKDIR && REBIND_POINTER_LIST=$POINTER_LIST \
   REBIND_REGISTRY_LIST=$REGISTRY_LIST \
-  REBIND_ENABLE=${REBIND_ENABLE:-1} REBIND_MAX=${REBIND_MAX:-10} \
-  REBIND_MAX_AGE_H=${REBIND_MAX_AGE_H:-48} \
+  REBIND_ENABLE=${REBIND_ENABLE:-1} REBIND_MAX=${REBIND_MAX:-20} \
+  REBIND_MAX_AGE_H=${REBIND_MAX_AGE_H:-168} \
   REBIND_POINTERS=${REBIND_POINTERS:-1} \
   /usr/local/bin/rebind-sessions.sh" >/tmp/rebind.log 2>&1 &
 }

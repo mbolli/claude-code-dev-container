@@ -54,8 +54,8 @@ SKIP_FILE="$HOME_DIR/.claude/no-rebind"
 PIN_FILE="$HOME_DIR/.claude/rebind-sessions"
 
 REBIND_ENABLE=${REBIND_ENABLE:-1}
-REBIND_MAX=${REBIND_MAX:-10}
-REBIND_MAX_AGE_H=${REBIND_MAX_AGE_H:-48}
+REBIND_MAX=${REBIND_MAX:-20}
+REBIND_MAX_AGE_H=${REBIND_MAX_AGE_H:-168}
 REBIND_POINTERS=${REBIND_POINTERS:-1}
 REBIND_DRYRUN=${REBIND_DRYRUN:-0}
 REBIND_POINTER_LIST=${REBIND_POINTER_LIST:-}
@@ -232,16 +232,18 @@ fi
 #    REBIND_MAX_AGE_H, newest first, once per server id.
 if [ -n "$REBIND_REGISTRY_LIST" ] && [ -s "$REBIND_REGISTRY_LIST" ]; then
   cutoff=$(( ($(date +%s) - REBIND_MAX_AGE_H * 3600) * 1000 ))
-  while IFS=$'\t' read -r updated sid uuid dir entry tsess name; do
-    case "$sid" in session_*) ;; *) continue ;; esac
+  # Tabs are IFS whitespace and an empty bridgeSessionId would shift every
+  # later column, so split on \037 instead, which does not collapse.
+  while IFS=$'\037' read -r updated sid uuid dir entry tsess name; do
     [ "${updated:-0}" -ge "$cutoff" ] || break
     if [ "$launched" -ge "$REBIND_MAX" ]; then log "reached REBIND_MAX=$REBIND_MAX"; break; fi
-    if [ "$entry" = "cli" ]; then
-      resume_cli "$sid" "$uuid" "$dir" "$tsess" "$name"
-    else
+    # A cli session resumes from its transcript, so it needs no server id.
+    if [ "$entry" = "cli" ] && [ -n "$uuid" ]; then
+      resume_cli "${sid:-$uuid}" "$uuid" "$dir" "$tsess" "$name"
+    elif [ "${sid#session_}" != "$sid" ]; then
       rebind_one "$sid" "$dir" "registry" "$uuid"
     fi
-  done < <(sort -t$'\t' -k1,1nr "$REBIND_REGISTRY_LIST")
+  done < <(sort -t$'\t' -k1,1nr "$REBIND_REGISTRY_LIST" | tr '\t' '\037')
 fi
 
 # 3. Then the pre-start pointer snapshot, falling back to live pointers when

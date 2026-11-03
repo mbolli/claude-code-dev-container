@@ -343,8 +343,8 @@ Tunables, as environment variables read by the entrypoint:
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `REBIND_ENABLE` | `1` | Rebind at all |
-| `REBIND_MAX` | `10` | Most sessions to restore |
-| `REBIND_MAX_AGE_H` | `48` | Only sessions active within this many hours |
+| `REBIND_MAX` | `20` | Most sessions to restore |
+| `REBIND_MAX_AGE_H` | `168` | Only sessions active within this many hours |
 | `REBIND_POINTERS` | `1` | Use the pointer snapshot |
 
 `cat /tmp/rebind.log` in the container shows the last run.
