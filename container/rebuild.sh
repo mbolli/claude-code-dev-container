@@ -6,9 +6,10 @@
 # or the Unraid UI, otherwise the config is lost the moment the container is
 # removed.
 #
-# Persistence boundary: only /home/dev and /develop survive a rebuild. Anything
-# installed into the image filesystem at runtime is discarded - put it in the
-# Dockerfile instead.
+# Persistence boundary: only /home/dev, /develop and /tmp survive a rebuild.
+# Anything installed into the image filesystem at runtime is discarded - put it
+# in the Dockerfile instead. /tmp is on the cache disk to keep scratchpads out
+# of docker.img; the entrypoint expires old scratchpad files.
 set -e
 cd "$(dirname "$0")"
 
@@ -27,6 +28,7 @@ docker run -d \
   -p 2222:22 \
   -v /mnt/user/appdata/claude-code/home:/home/dev \
   -v /mnt/user/develop:/develop \
+  -v /mnt/cache/appdata/claude-code/tmp:/tmp \
   -v /var/run/docker.sock:/var/run/docker.sock \
   claude-code:local
 

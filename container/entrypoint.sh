@@ -84,6 +84,11 @@ EOF
 SSHD_PID=$!
 
 
+# /tmp is a bind mount that outlives the container: open it to all and drop
+# tmux sockets left by the previous run.
+chmod 1777 /tmp
+rm -rf /tmp/tmux-*
+
 # Snapshot each directory's Remote Control pointer BEFORE the host starts. The
 # host pre-creates a session in its cwd and rewrites bridge-pointer.json within
 # a second, which would otherwise destroy the previous run's session id.
@@ -131,6 +136,12 @@ su dev -c "cd $WORKDIR && tmux new-session -d -s rc \
 # loop moves idle spawners and sessions onto a newer claude (sessel upgrade).
 su dev -c "sessel serve" >/tmp/serve.log 2>&1 || true
 su dev -c "while sleep 3600; do sessel serve; sessel upgrade; done" >>/tmp/serve.log 2>&1 &
+
+# Expire scratchpad files after 14 days; mindepth 4 keeps each scratchpad itself.
+su dev -c "while sleep 86400; do
+  find /tmp/claude-99 -xdev -type f -mtime +14 -delete
+  find /tmp/claude-99 -xdev -mindepth 4 -type d -empty -delete
+done" >/dev/null 2>&1 &
 
 # Re-attach sessions from the previous run, each in its own tmux window.
 # Backgrounded: it waits for the tmux session above and then adds windows, and
