@@ -39,7 +39,7 @@ script instead.
 
 | Path | Purpose |
 | --- | --- |
-| `Dockerfile` | Debian sid base plus the toolchain |
+| `Dockerfile` | Debian trixie base plus the toolchain |
 | `entrypoint.sh` | sshd, Claude, Codex and agy install, Remote Control host, session rebind |
 | `trust-develop.sh` | Pre-accepts the workspace trust dialog for every repo |
 | `rebind-sessions.sh` | Restores the previous run's Claude sessions on start |
@@ -65,18 +65,19 @@ build context on every build.
 
 ### What is inside
 
-Base is Debian sid, so most of this comes straight from apt at whatever version
-sid currently carries. Versions below are what the running image has today, not
-pins. Only the three `ARG` lines at the top of the `Dockerfile` are pinned.
+Base is Debian trixie (stable), because Sury builds PHP for stable; on sid its
+packages stopped installing. Most of this comes from trixie's apt. Versions
+below are what the running image has today, not pins. Only the `ARG` lines at
+the top of the `Dockerfile` are pinned.
 
 **Runtimes**
 
 | | Version | Why |
 | --- | --- | --- |
-| nodejs | 24.21 | Runs Claude Code and most tooling. From sid, so no NodeSource repo |
-| npm | 12.0 | Ships with nodejs |
-| python3 | 3.14 | From sid. `pipx` and `venv` included |
-| php | 8.5.11 | From Sury's trixie suite: Debian sid has not done the 8.5 transition yet |
+| nodejs | 24.22 | Runs Claude Code and most tooling. From NodeSource (`ARG NODE_MAJOR`): trixie has only 20 |
+| npm | 11.19 | Ships with nodejs |
+| python3 | 3.13 | From trixie. `pipx` and `venv` included |
+| php | 8.5.12 | From Sury's trixie suite |
 | go | 1.26.5 | Pinned via `ARG GO_VERSION`, installed from go.dev |
 
 **PHP extensions worth calling out**
@@ -126,7 +127,7 @@ pins. Only the three `ARG` lines at the top of the `Dockerfile` are pinned.
 | shellcheck | 0.11.0 | |
 | sqlite3 | 3.53.4 | |
 | mariadb-client | 11.8.9 | Matches the mariadb container it talks to |
-| mdbook | 0.5.4 | |
+| mdbook | 0.5.4 | From its GitHub release (`ARG MDBOOK_VERSION`): trixie has 0.4 |
 | rsync | 3.5.1 | |
 
 Both `fd` and `bat` are symlinked into `/usr/local/bin` because Debian ships

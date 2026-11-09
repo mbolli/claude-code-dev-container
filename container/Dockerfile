@@ -1,34 +1,40 @@
-FROM debian:sid-slim
+# Trixie, because Sury builds PHP for stable: on sid its packages broke once sid
+# moved to libsodium26 (November 2026).
+FROM debian:trixie-slim
 
 ARG GO_VERSION=1.26.5
 ARG TASK_VERSION=3.45.4
-# Debian has not done the PHP 8.5 transition yet (sid is still 8.4), so PHP
-# comes from Sury's trixie suite, which resolves cleanly on sid. Set to 8.4 for
-# a more conservative version, or add a second set of php${VER}-* packages to
-# run versions side by side.
+ARG NODE_MAJOR=24
+ARG MDBOOK_VERSION=0.5.4
 ARG PHP_VERSION=8.5
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Base toolchain. sid ships nodejs 24.19 and python 3.13 natively, so no
-# NodeSource repo is needed. mariadb-client is 11.8.8, the same version as the
-# mariadb container it talks to; mdbook is 0.5.4.
+# Base toolchain. mariadb-client is 11.8, the same version as the mariadb
+# container it talks to. Node and mdbook come further down: trixie has only
+# Node 20 and mdbook 0.4.
 # ImageMagick reads AVIF but cannot write it without an encoder: Debian ships
 # libheif's AV1 encoders as separate plugin packages. GD needs nothing extra.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl wget git gh tmux openssh-server openssh-client less jq \
       procps sudo xz-utils unzip zip build-essential pkg-config \
-      ripgrep fd-find bat shellcheck sqlite3 mariadb-client mdbook rsync imagemagick ffmpeg \
+      ripgrep fd-find bat shellcheck sqlite3 mariadb-client rsync imagemagick ffmpeg \
       bubblewrap \
       docker-cli docker-compose docker-buildx \
       brotli ncurses-term \
       libheif-plugin-aomenc libheif-plugin-svtenc \
-      nodejs npm \
       python3 python3-pip python3-venv pipx \
       chromium fonts-liberation fonts-noto-color-emoji \
     && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
     && ln -sf /usr/bin/batcat /usr/local/bin/bat \
     && rm -rf /var/lib/apt/lists/*
+
+# Node from NodeSource (npm included), mdbook from its release.
+RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz \
+       | tar -xz -C /usr/local/bin mdbook
 
 # PHP from Sury
 RUN curl -fsSL https://packages.sury.org/php/apt.gpg -o /usr/share/keyrings/sury-php.gpg \
