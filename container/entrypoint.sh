@@ -118,10 +118,6 @@ chown 99:100 "$REGISTRY_LIST" 2>/dev/null || true
 # after a later /login. Wait for the login first, in the background so sshd and
 # the shell stay usable for running /login. Progress lands in /tmp/login.log.
 start_remote_control() {
-# Account pool and private->work fallback daemon for Claude and Codex.
-su dev -c "tmux new-session -d -s clauth \
-  'while :; do clauth daemon; sleep 5; done'" || true
-
 # Remote Control under tmux so it survives docker exec sessions detaching.
 #
 # same-dir, not worktree: $WORKDIR holds many repos and is not itself a git
@@ -153,6 +149,12 @@ su dev -c "cd $WORKDIR && REBIND_POINTER_LIST=$POINTER_LIST \
   REBIND_POINTERS=${REBIND_POINTERS:-1} \
   /usr/local/bin/rebind-sessions.sh" >/tmp/rebind.log 2>&1 &
 }
+
+# Account pool and private->work fallback daemon for Claude and Codex. Outside
+# the login wait on purpose: the daemon is what switches an exhausted account
+# for a fresh one, so it must not wait for a working login itself.
+su dev -c "tmux new-session -d -s clauth \
+  'while :; do clauth daemon; sleep 30; done'" || true
 
 ( su dev -c /usr/local/bin/wait-for-login.sh >/tmp/login.log 2>&1
   start_remote_control ) &
