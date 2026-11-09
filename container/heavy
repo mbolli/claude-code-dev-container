@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# heavy [--always] <command...>: run a CPU- or memory-hungry job on tower.
+# Runs at once while tower has room, otherwise queues on the shared lock.
+# --always queues regardless: for the jobs CLAUDE.md lists as always heavy.
+set -uo pipefail
+
+LOCK=${HEAVY_LOCK:-/tmp/heavy.lock}
+MAX_LOAD=${HEAVY_MAX_LOAD:-10}         # 1-minute load average; tower has 20 cores
+MIN_AVAIL_GB=${HEAVY_MIN_AVAIL_GB:-16} # RAM ran out in both freezes, not CPU
+
+always=0
+[ "${1:-}" = --always ] && { always=1; shift; }
+[ $# -gt 0 ] || { echo "usage: heavy [--always] <command...>" >&2; exit 2; }
+
+load=$(cut -d' ' -f1 /proc/loadavg)
+avail=$(awk '/^MemAvailable:/ {printf "%d", $2 / 1048576}' /proc/meminfo)
+
+if [ "$always" = 0 ] && awk -v l="$load" -v m="$MAX_LOAD" 'BEGIN { exit !(l < m) }' \
+   && [ "$avail" -ge "$MIN_AVAIL_GB" ]; then
+  echo "[heavy] load $load, ${avail} GB free: running now" >&2
+  exec "$@"
+fi
+why="load $load, ${avail} GB free"
+[ "$always" = 1 ] && why="--always"
+echo "[heavy] $why: queueing on $LOCK" >&2
+exec flock "$LOCK" "$@"

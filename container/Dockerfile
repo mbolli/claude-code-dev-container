@@ -134,8 +134,10 @@ COPY entrypoint.sh /entrypoint.sh
 COPY rebind-sessions.sh /usr/local/bin/rebind-sessions.sh
 COPY trust-develop.sh /usr/local/bin/trust-develop.sh
 COPY wait-for-login.sh /usr/local/bin/wait-for-login.sh
+COPY heavy /usr/local/bin/heavy
 RUN chmod +x /entrypoint.sh /usr/local/bin/rebind-sessions.sh \
-    /usr/local/bin/trust-develop.sh /usr/local/bin/wait-for-login.sh
+    /usr/local/bin/trust-develop.sh /usr/local/bin/wait-for-login.sh \
+    /usr/local/bin/heavy
 
 # sessel: sessions by either id, peek, resume, delete, and a spawner per recent
 # repo for the phone. Last, so a change to it rebuilds only this layer. The Go
