@@ -21,6 +21,7 @@ const usage = `sessel: Claude Code, Codex and Antigravity sessions on this conta
   sessel json                             every session, for tools
   sessel peek <id>                        what the session was about and where it stopped
   sessel rename <id> <title>              set a title, as /rename does
+  sessel keep-name <id> <name>            store a stopped session's name so a resume keeps it
   sessel rm [-n] [-f] <id>...             delete for real (-n: only list, -f: no prompt)
   sessel new [-agent claude|codex|agy] [<agent>:]<name>
                                           create /develop/<name>, git init, and serve or start
@@ -50,6 +51,8 @@ func main() {
 		err = cmdPeek(args)
 	case "rename":
 		err = cmdRename(args)
+	case "keep-name":
+		err = cmdKeepName(args)
 	case "rm":
 		err = cmdRm(args)
 	case "new":

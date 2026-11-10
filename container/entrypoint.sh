@@ -108,7 +108,8 @@ REGISTRY_LIST=/tmp/rebind-registry.tsv
 for f in "$HOME_DIR"/.claude/sessions/*.json; do
   [ -f "$f" ] || continue
   jq -r '[.updatedAt // 0, .bridgeSessionId // "", .sessionId // "", .cwd // "",
-          .entrypoint // "", (.tmux // "" | split(":")[0]), .name // ""] | @tsv' \
+          .entrypoint // "", (.tmux // "" | split(":")[0]), .name // "",
+          .nameSource // ""] | @tsv' \
     "$f" >> "$REGISTRY_LIST" 2>/dev/null || true
 done
 chown 99:100 "$REGISTRY_LIST" 2>/dev/null || true

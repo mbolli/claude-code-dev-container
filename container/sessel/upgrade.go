@@ -26,6 +26,7 @@ type regEntry struct {
 	ProcStart       string `json:"procStart"`
 	SessionID       string `json:"sessionId"`
 	Name            string `json:"name"`
+	NameSource      string `json:"nameSource"` // "user" for a given name, "derived" for <repo>-<hex>
 	Cwd             string `json:"cwd"`
 	Entrypoint      string `json:"entrypoint"`
 	BridgeSessionID string `json:"bridgeSessionId"`
@@ -174,6 +175,7 @@ func cmdUpgrade(args []string) error {
 		label := fmt.Sprintf("%s:%s (%s, %s)", p.Session, p.Window, ver, strings.Join(args[1:min(len(args), 3)], " "))
 		var argv []string      // empty: respawn with the pane's own start command
 		var orphans []regEntry // spawner sessions the restarted spawner will not take back
+		var named *regEntry    // a session whose given name must survive the resume
 		switch {
 		case has(args, "remote-control") && has(args, "--spawn"):
 			for _, c := range childrenOf(pid) {
@@ -199,6 +201,9 @@ func cmdUpgrade(args []string) error {
 			}
 			// resume this conversation, never start a fresh one in its place
 			argv = []string{"claude", "--remote-control", r.Name, "--resume", r.SessionID}
+			if r.NameSource == "user" {
+				named = &r
+			}
 		default:
 			continue // workers follow their spawner; single-session hosts end on their own
 		}
@@ -208,6 +213,9 @@ func cmdUpgrade(args []string) error {
 			// Keep the pane while it is empty, or a pane running claude directly closes with it.
 			tmuxCmd("set-option", "-p", "-t", p.ID, "remain-on-exit", "on").Run()
 			stop(pid)
+			if named != nil {
+				keepName(*named)
+			}
 			rargs := []string{"respawn-pane", "-k", "-t", p.ID, "-c", p.Path}
 			if len(argv) > 0 {
 				rargs = append(rargs, "-e", "LANG=C.UTF-8")
@@ -234,6 +242,16 @@ func cmdUpgrade(args []string) error {
 		fmt.Printf("nothing restarted, latest is %s\n", latest)
 	}
 	return nil
+}
+
+func keepName(r regEntry) {
+	s, err := mustLoad().Resolve(r.SessionID)
+	if err == nil {
+		err = KeepName(s, r.Name)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sessel: keep name %s for %s: %v\n", r.Name, r.SessionID, err)
+	}
 }
 
 // resumeOrphan continues a session whose spawner was replaced, as sessel open

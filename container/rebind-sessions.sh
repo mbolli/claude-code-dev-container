@@ -111,7 +111,7 @@ declare -A seen=()
 # An interactive `claude --remote-control` session: no bridge environment to
 # reattach to, so resume the transcript in a tmux session of the same name.
 resume_cli() {
-  local sid=$1 uuid=$2 dir=$3 tsess=$4 name=$5
+  local sid=$1 uuid=$2 dir=$3 tsess=$4 name=$5 src=${6:-}
 
   # A transcript can sit under several server ids; resume it once.
   [ -n "${seen[$sid]:-}${seen[$uuid]:-}" ] && return 0
@@ -127,7 +127,15 @@ resume_cli() {
 
   if [ "$REBIND_DRYRUN" = "1" ]; then
     log "DRYRUN would resume $uuid in $dir as tmux '$tsess' ($sid)"
-  elif tmux has-session -t "=$tsess" 2>/dev/null; then
+    launched=$((launched + 1))
+    return 0
+  fi
+  # claude 2.1.322 ignores `--remote-control NAME` on --resume; a name in the
+  # transcript survives, so store the one you gave the session there first.
+  if [ "$src" = "user" ] && [ -n "$name" ]; then
+    sessel keep-name "$uuid" "$name" || log "could not keep name '$name' for $uuid"
+  fi
+  if tmux has-session -t "=$tsess" 2>/dev/null; then
     log "resuming $uuid in $dir as a window in tmux '$tsess' ($sid)"
     tmux new-window -d -t "=$tsess" -c "$dir" \
       "LANG=C.UTF-8 claude --remote-control '$name' --resume $uuid; exec bash"
@@ -234,12 +242,12 @@ if [ -n "$REBIND_REGISTRY_LIST" ] && [ -s "$REBIND_REGISTRY_LIST" ]; then
   cutoff=$(( ($(date +%s) - REBIND_MAX_AGE_H * 3600) * 1000 ))
   # Tabs are IFS whitespace and an empty bridgeSessionId would shift every
   # later column, so split on \037 instead, which does not collapse.
-  while IFS=$'\037' read -r updated sid uuid dir entry tsess name; do
+  while IFS=$'\037' read -r updated sid uuid dir entry tsess name src; do
     [ "${updated:-0}" -ge "$cutoff" ] || break
     if [ "$launched" -ge "$REBIND_MAX" ]; then log "reached REBIND_MAX=$REBIND_MAX"; break; fi
     # A cli session resumes from its transcript, so it needs no server id.
     if [ "$entry" = "cli" ] && [ -n "$uuid" ]; then
-      resume_cli "${sid:-$uuid}" "$uuid" "$dir" "$tsess" "$name"
+      resume_cli "${sid:-$uuid}" "$uuid" "$dir" "$tsess" "$name" "$src"
     elif [ "${sid#session_}" != "$sid" ]; then
       rebind_one "$sid" "$dir" "registry" "$uuid"
     fi

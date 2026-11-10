@@ -209,23 +209,57 @@ func Rename(s *Session, title string) error {
 	case AgentAgy:
 		return renameAgy(s, title)
 	}
-	entry, err := json.Marshal(struct {
+	return appendRecords(s.File, customTitle(s.UUID, title))
+}
+
+// KeepName stores the name a stopped Claude session ran under in its
+// transcript, as /rename does. Claude 2.1.322 dropped `--remote-control NAME`
+// on --resume and derives a new name unless the transcript carries one.
+func KeepName(s *Session, name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" || s.AgentName() != AgentClaude {
+		return nil
+	}
+	if alive(s.PID, s.procStart) {
+		return fmt.Errorf("%s is running and would overwrite this", s.UUID[:8])
+	}
+	if m, _ := scan(s.File, 0, meta{}, parseLine); m.AgentName == name && m.CustomTitle == name {
+		return nil
+	}
+	agent := struct {
+		Type      string `json:"type"`
+		AgentName string `json:"agentName"`
+		SessionID string `json:"sessionId"`
+	}{"agent-name", name, s.UUID}
+	return appendRecords(s.File, customTitle(s.UUID, name), agent)
+}
+
+func customTitle(uuid, title string) any {
+	return struct {
 		Type        string `json:"type"`
 		CustomTitle string `json:"customTitle"`
 		SessionID   string `json:"sessionId"`
-	}{"custom-title", title, s.UUID})
-	if err != nil {
-		return err
+	}{"custom-title", title, uuid}
+}
+
+func appendRecords(path string, records ...any) error {
+	var buf []byte
+	if !endsWithNewline(path) {
+		buf = append(buf, '\n')
 	}
-	f, err := os.OpenFile(s.File, os.O_WRONLY|os.O_APPEND, 0)
+	for _, r := range records {
+		b, err := json.Marshal(r)
+		if err != nil {
+			return err
+		}
+		buf = append(append(buf, b...), '\n')
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	if !endsWithNewline(s.File) {
-		entry = append([]byte("\n"), entry...)
-	}
-	_, err = f.Write(append(entry, '\n'))
+	_, err = f.Write(buf)
 	return err
 }
 
@@ -255,6 +289,17 @@ func cmdRename(args []string) error {
 		return err
 	}
 	return Rename(s, strings.Join(args[1:], " "))
+}
+
+func cmdKeepName(args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: sessel keep-name <id> <name>")
+	}
+	s, err := mustLoad().Resolve(args[0])
+	if err != nil {
+		return err
+	}
+	return KeepName(s, strings.Join(args[1:], " "))
 }
 
 func cmdRm(args []string) error {
