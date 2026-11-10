@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # heavy [--always] <command...>: run a CPU- or memory-hungry job on tower.
-# Runs at once while tower has room, otherwise queues on the shared lock.
-# --always queues regardless: for the jobs CLAUDE.md lists as always heavy.
+# Runs at once while tower has room, otherwise waits for one of HEAVY_SLOTS
+# queue slots and for RAM to be free. --always always takes a slot: for the
+# jobs CLAUDE.md lists as always heavy.
 set -uo pipefail
 
-LOCK=${HEAVY_LOCK:-/tmp/heavy.lock}
+LOCK=${HEAVY_LOCK:-/tmp/heavy.lock}    # slots are $LOCK.1 to $LOCK.$SLOTS
+SLOTS=${HEAVY_SLOTS:-3}
 MAX_LOAD=${HEAVY_MAX_LOAD:-10}         # 1-minute load average; tower has 20 cores
 MIN_AVAIL_GB=${HEAVY_MIN_AVAIL_GB:-16} # RAM ran out in both freezes, not CPU
 
@@ -12,15 +14,33 @@ always=0
 [ "${1:-}" = --always ] && { always=1; shift; }
 [ $# -gt 0 ] || { echo "usage: heavy [--always] <command...>" >&2; exit 2; }
 
-load=$(cut -d' ' -f1 /proc/loadavg)
-avail=$(awk '/^MemAvailable:/ {printf "%d", $2 / 1048576}' /proc/meminfo)
+load() { cut -d' ' -f1 /proc/loadavg; }
+avail() { awk '/^MemAvailable:/ {printf "%d", $2 / 1048576}' /proc/meminfo; }
 
-if [ "$always" = 0 ] && awk -v l="$load" -v m="$MAX_LOAD" 'BEGIN { exit !(l < m) }' \
-   && [ "$avail" -ge "$MIN_AVAIL_GB" ]; then
-  echo "[heavy] load $load, ${avail} GB free: running now" >&2
+if [ "$always" = 0 ] && awk -v l="$(load)" -v m="$MAX_LOAD" 'BEGIN { exit !(l < m) }' \
+   && [ "$(avail)" -ge "$MIN_AVAIL_GB" ]; then
+  echo "[heavy] load $(load), $(avail) GB free: running now" >&2
   exec "$@"
 fi
-why="load $load, ${avail} GB free"
+why="load $(load), $(avail) GB free"
 [ "$always" = 1 ] && why="--always"
-echo "[heavy] $why: queueing on $LOCK" >&2
-exec flock "$LOCK" "$@"
+echo "[heavy] $why: waiting for one of $SLOTS slots on $LOCK.N" >&2
+
+# Take the first free slot (an fd held until the command ends), then wait for
+# the RAM a queued job needs, so freed slots don't start jobs into a full tower.
+waited=0
+while :; do
+  for i in $(seq 1 "$SLOTS"); do
+    exec {fd}>>"$LOCK.$i"
+    if flock -n "$fd"; then
+      while [ "$(avail)" -lt "$MIN_AVAIL_GB" ]; do
+        [ $((waited % 60)) = 0 ] && echo "[heavy] slot $i: $(avail) GB free, waiting for $MIN_AVAIL_GB" >&2
+        sleep 5; waited=$((waited + 5))
+      done
+      echo "[heavy] slot $i: running" >&2
+      exec "$@"
+    fi
+    exec {fd}>&-
+  done
+  sleep 5
+done
