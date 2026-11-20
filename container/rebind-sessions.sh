@@ -105,6 +105,21 @@ pointer_sid() {
 }
 HOST_SID=$(pointer_sid "$REBIND_HOST_DIR")
 
+# The main host serves REBIND_HOST_DIR, a sessel spawner each folder in serve.
+has_spawner() {
+  [ "$1" = "$REBIND_HOST_DIR" ] || \
+    tmux list-windows -t "=$SERVE_TMUX" -F '#{pane_current_path}' 2>/dev/null | grep -qxF "$1"
+}
+
+# The transcript a folder's spawner takes back at start, via its pointer's
+# session; resuming it again would leave two processes on one transcript.
+spawner_uuid() {
+  local psid
+  psid=$(pointer_sid "$1")
+  [ -n "$psid" ] && [ -n "$REBIND_REGISTRY_LIST" ] && [ -s "$REBIND_REGISTRY_LIST" ] || return 0
+  awk -F'\t' -v s="$psid" '$2 == s { print $3; exit }' "$REBIND_REGISTRY_LIST"
+}
+
 launched=0
 declare -A seen=()
 
@@ -122,6 +137,9 @@ resume_cli() {
   fi
   if [ ! -f "$PROJECTS/$(printf '%s' "$dir" | tr '/.' '--')/$uuid.jsonl" ]; then
     log "skip $sid (registry) - no transcript $uuid to resume"; return 0
+  fi
+  if has_spawner "$dir" && [ "$(spawner_uuid "$dir")" = "$uuid" ]; then
+    log "skip $uuid (registry) - the spawner in $dir takes this transcript back"; return 0
   fi
   tsess=${tsess:-$name}
 
@@ -176,10 +194,11 @@ rebind_one() {
 
   # Only one remote-control may serve a folder. A sessel spawner there takes
   # back its pointer's session; the others continue from their transcripts.
-  if [ "$dir" = "$REBIND_HOST_DIR" ] || \
-     tmux list-windows -t "=$SERVE_TMUX" -F '#{pane_current_path}' 2>/dev/null | grep -qxF "$dir"; then
+  if has_spawner "$dir"; then
     if [ "$sid" = "$(pointer_sid "$dir")" ]; then
       log "skip $sid ($origin) - the spawner in $dir reclaims it"
+    elif [ -n "$uuid" ] && [ "$uuid" = "$(spawner_uuid "$dir")" ]; then
+      log "skip $sid ($origin) - the spawner in $dir takes transcript $uuid back"
     elif [ -z "$uuid" ]; then
       log "skip $sid ($origin) - $dir has a spawner and no transcript is known to resume"
     elif [ -n "${seen[$uuid]:-}" ]; then

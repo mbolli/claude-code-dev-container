@@ -10,6 +10,10 @@
 # Anything installed into the image filesystem at runtime is discarded - put it
 # in the Dockerfile instead. /tmp is on the cache disk to keep scratchpads out
 # of docker.img; the entrypoint expires old scratchpad files.
+#
+# All three mounts use /mnt/cache, not /mnt/user: appdata and develop are
+# cache-only shares, and a crash of shfs (20 Nov 2026) took every /mnt/user
+# mount down with it. If either share ever moves to the array, switch back.
 set -e
 cd "$(dirname "$0")"
 
@@ -26,8 +30,8 @@ docker run -d \
   --memory=36g --memory-swap=36g \
   --security-opt seccomp=unconfined \
   -p 2222:22 \
-  -v /mnt/user/appdata/claude-code/home:/home/dev \
-  -v /mnt/user/develop:/develop \
+  -v /mnt/cache/appdata/claude-code/home:/home/dev \
+  -v /mnt/cache/develop:/develop \
   -v /mnt/cache/appdata/claude-code/tmp:/tmp \
   -v /var/run/docker.sock:/var/run/docker.sock \
   claude-code:local
