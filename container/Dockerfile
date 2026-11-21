@@ -25,6 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libheif-plugin-aomenc libheif-plugin-svtenc \
       python3 python3-pip python3-venv pipx \
       chromium fonts-liberation fonts-noto-color-emoji \
+      poppler-utils \
     && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
     && ln -sf /usr/bin/batcat /usr/local/bin/bat \
     && rm -rf /var/lib/apt/lists/*
